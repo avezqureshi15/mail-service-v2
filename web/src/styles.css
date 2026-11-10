@@ -771,3 +771,7 @@ button.step-tab.active:hover { background: var(--accent-dark); color: #fff; }
 .filter-field select { width: 100%; }
 .filter-field select:disabled { opacity: .6; cursor: not-allowed; }
 
+
+/* Netlify injects a floating badge on free projects. Hidden rather than
+   left to overlap the campaign editor's controls in the bottom corner. */
+.nl-wrap { display: none !important; }
