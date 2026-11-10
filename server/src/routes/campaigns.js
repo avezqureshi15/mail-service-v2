@@ -25,6 +25,7 @@ campaignsRouter.use(requireAuth);
 
 const stepSchema = z.object({
   subject: z.string().trim().max(300).default(''),
+  preheader: z.string().trim().max(150).default(''),
   htmlBody: z.string().max(200_000).default(''),
   waitDays: z.coerce.number().int().min(0).max(90).default(3),
 });
@@ -38,6 +39,9 @@ const campaignSchema = z.object({
   // Optional: a sub-category narrows an existing category and may be omitted.
   subCategoryId: z.coerce.number().int().positive().nullable().optional(),
   subject: z.string().trim().max(300).default(''),
+  // Shown by mail clients in the inbox list, after the subject. Kept short -
+  // most clients cut it off well before 150 characters.
+  preheader: z.string().trim().max(150).default(''),
   htmlBody: z.string().max(200_000).default(''),
   fromName: z.string().trim().max(120).default(''),
   fromEmail: z.string().trim().email().or(z.literal('')).default(''),
@@ -143,6 +147,7 @@ campaignsRouter.post('/', validate(campaignSchema), async (req, res, next) => {
       categoryId: filing.categoryId,
       subCategoryId: filing.subCategoryId,
       subject: body.subject,
+      preheader: body.preheader,
       htmlBody: sanitizeBody(body.htmlBody),
       fromName: body.fromName,
       fromEmail: body.fromEmail,
@@ -211,6 +216,7 @@ campaignsRouter.put('/:id', validate(campaignSchema), async (req, res, next) => 
       category_id: filing.categoryId,
       sub_category_id: filing.subCategoryId,
       subject: body.subject,
+      preheader: body.preheader,
       html_body: sanitizeBody(body.htmlBody),
       from_name: body.fromName,
       from_email: body.fromEmail,
@@ -528,11 +534,12 @@ function buildSteps(body) {
   if (body.steps.length > 0) {
     return body.steps.map((step, index) => ({
       subject: step.subject || (index === 0 ? body.subject : ''),
+      preheader: step.preheader || (index === 0 ? body.preheader : ''),
       htmlBody: step.htmlBody || (index === 0 ? body.htmlBody : ''),
       waitDays: index === 0 ? 0 : step.waitDays,
     }));
   }
-  return [{ subject: body.subject, htmlBody: body.htmlBody, waitDays: 0 }];
+  return [{ subject: body.subject, preheader: body.preheader, htmlBody: body.htmlBody, waitDays: 0 }];
 }
 
 /**

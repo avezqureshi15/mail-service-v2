@@ -86,6 +86,30 @@ test('footer with unsubscribe link and postal address is injected automatically'
   );
 });
 
+test('preheader is injected as hidden preview text, merge fields and all', () => {
+  const { message } = composeMessage({
+    campaign: { ...campaign, preheader: 'A note for {{first_name}} at {{company}}' },
+    step,
+    contact,
+  });
+  assert.match(message.html, /display:none[^>]*>A note for Dana at Acme/);
+});
+
+test('a step-level preheader overrides the campaign default', () => {
+  const { message } = composeMessage({
+    campaign: { ...campaign, preheader: 'Campaign default' },
+    step: { ...step, preheader: 'Step-specific preview' },
+    contact,
+  });
+  assert.match(message.html, /Step-specific preview/);
+  assert.doesNotMatch(message.html, /Campaign default/);
+});
+
+test('no preheader markup when neither campaign nor step set one', () => {
+  const { message } = composeMessage({ campaign, step, contact });
+  assert.doesNotMatch(message.html, /mso-hide:all/);
+});
+
 test('follow-up steps thread onto the original message', () => {
   const { message } = composeMessage({
     campaign,

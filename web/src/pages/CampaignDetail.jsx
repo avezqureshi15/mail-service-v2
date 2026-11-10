@@ -241,6 +241,11 @@ export default function CampaignDetail({ user }) {
             <button type="button" className="secondary small" onClick={loadPreview}>
               {preview ? 'Refresh' : 'Show preview'}
             </button>
+            {preview && (
+              <button type="button" className="secondary small" onClick={() => setPreview(null)}>
+                Close
+              </button>
+            )}
           </div>
         </div>
 

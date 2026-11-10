@@ -23,3 +23,6 @@ web/dist/
 
 # Local import fixtures - these held real addresses, and this repo is public.
 testdata/
+
+# Runtime lock for scheduled tasks, not shared config.
+.claude/scheduled_tasks.lock

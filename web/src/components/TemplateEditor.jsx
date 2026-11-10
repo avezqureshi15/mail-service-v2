@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import {
   extractFields, applyFieldEdits, extractLinks, applyLinkEdits,
 } from '../lib/template-text.js';
+import MergeFieldInput from './MergeFieldInput.jsx';
 
 const MERGE_FIELDS = ['first_name', 'last_name', 'company', 'email'];
 
@@ -16,12 +17,17 @@ const MERGE_FIELDS = ['first_name', 'last_name', 'company', 'email'];
  *
  * Holds no copy of the content - it reads from `currentStep` and reports
  * edits upward, so switching step always shows that step's text.
+ *
+ * Simple/HTML mode is a controlled prop rather than local state: the wizard's
+ * Design & Content step shows that toggle in its own top bar, shared with the
+ * sequence step tabs, rather than duplicating it inside this card.
  */
-export default function TemplateEditor({ templateId, onContentChange, currentStep }) {
+export default function TemplateEditor({
+  templateId, onContentChange, currentStep, mode, onModeChange, onChooseTemplate,
+}) {
   const [template, setTemplate] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [mode, setMode] = useState('simple');
   const [collapsed, setCollapsed] = useState({});
 
   const subject = currentStep?.subject ?? '';
@@ -103,19 +109,7 @@ export default function TemplateEditor({ templateId, onContentChange, currentSte
   }, [fields]);
 
   function insertMergeField(name) {
-    const input = subjectRef.current;
-    const token = `{{${name}}}`;
-    if (!input) {
-      onContentChange({ subject: subject + token });
-      return;
-    }
-    const start = input.selectionStart ?? subject.length;
-    const end = input.selectionEnd ?? subject.length;
-    onContentChange({ subject: subject.slice(0, start) + token + subject.slice(end) });
-    requestAnimationFrame(() => {
-      input.focus();
-      input.setSelectionRange(start + token.length, start + token.length);
-    });
+    subjectRef.current?.insertToken(`{{${name}}}`);
   }
 
   if (loading) {
@@ -126,33 +120,26 @@ export default function TemplateEditor({ templateId, onContentChange, currentSte
 
   return (
     <div className="card">
-      <div className="step-head">
-        <h3 style={{ margin: 0 }}>Message content</h3>
-        <div className="preview-tabs" style={{ margin: 0 }}>
-          <button type="button" className={mode === 'simple' ? 'active' : ''} onClick={() => setMode('simple')}>
-            Simple
-          </button>
-          <button type="button" className={mode === 'html' ? 'active' : ''} onClick={() => setMode('html')}>
-            HTML
-          </button>
-        </div>
-      </div>
-
       {error && <div className="alert error">Could not load the template: {error}</div>}
 
       <div className="field">
         <label htmlFor="subject">Subject line</label>
-        <input
+        <MergeFieldInput
           id="subject"
           ref={subjectRef}
-          type="text"
           value={subject}
-          onChange={(e) => onContentChange({ subject: e.target.value })}
+          onChange={(value) => onContentChange({ subject: value })}
           placeholder="Question about {{company}}"
         />
         <div className="chips">
           {MERGE_FIELDS.map((name) => (
-            <button key={name} type="button" className="chip" onClick={() => insertMergeField(name)}>
+            <button
+              key={name}
+              type="button"
+              className="chip"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => insertMergeField(name)}
+            >
               + {`{{${name}}}`}
             </button>
           ))}
@@ -181,7 +168,8 @@ export default function TemplateEditor({ templateId, onContentChange, currentSte
           onToggleSection={(name) => setCollapsed((c) => ({ ...c, [name]: !c[name] }))}
           onEditField={(i, v) => onContentChange({ htmlBody: applyFieldEdits(htmlBody, { [i]: v }) })}
           onEditLink={(i, v) => onContentChange({ htmlBody: applyLinkEdits(htmlBody, { [i]: v }) })}
-          onSwitchToHtml={() => setMode('html')}
+          onSwitchToHtml={() => onModeChange('html')}
+          onChooseTemplate={onChooseTemplate}
         />
       )}
 
@@ -196,12 +184,13 @@ export default function TemplateEditor({ templateId, onContentChange, currentSte
 
 function SimpleEditor({
   htmlBody, sections, links, linkByFieldText, missingLinks,
-  collapsed, onToggleSection, onEditField, onEditLink, onSwitchToHtml,
+  collapsed, onToggleSection, onEditField, onEditLink, onSwitchToHtml, onChooseTemplate,
 }) {
   if (!htmlBody.trim()) {
     return (
       <div className="empty">
-        Choose a template above to get started, or{' '}
+        <button type="button" onClick={onChooseTemplate}>Choose a template</button>
+        {' '}or{' '}
         <button type="button" className="secondary small" onClick={onSwitchToHtml}>
           write the HTML yourself
         </button>
@@ -300,22 +289,12 @@ function FieldInput({ field, link, onEditField, onEditLink }) {
         {link?.isPlaceholder && <span className="badge warn" style={{ marginLeft: 8 }}>no link set</span>}
       </label>
 
-      {field.multiline ? (
-        <textarea
-          id={`f-${field.index}`}
-          rows={Math.min(8, Math.max(3, Math.ceil(field.text.length / 70)))}
-          defaultValue={field.text}
-          onBlur={(e) => onEditField(field.index, e.target.value)}
-          style={{ fontFamily: 'inherit', fontSize: 14 }}
-        />
-      ) : (
-        <input
-          id={`f-${field.index}`}
-          type="text"
-          defaultValue={field.text}
-          onBlur={(e) => onEditField(field.index, e.target.value)}
-        />
-      )}
+      <MergeFieldInput
+        id={`f-${field.index}`}
+        multiline={field.multiline}
+        value={field.text}
+        onBlur={(value) => onEditField(field.index, value)}
+      />
 
       {link && (
         <>

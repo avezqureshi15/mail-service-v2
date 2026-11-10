@@ -7,6 +7,7 @@ export async function createCampaign({
   categoryId = null,
   subCategoryId = null,
   subject = '',
+  preheader = '',
   htmlBody = '',
   fromName = '',
   fromEmail = '',
@@ -23,11 +24,11 @@ export async function createCampaign({
 
   const row = await queryOne(
     `INSERT INTO campaigns
-       (tenant_id, name, list_id, category_id, sub_category_id, subject, html_body,
+       (tenant_id, name, list_id, category_id, sub_category_id, subject, preheader, html_body,
         from_name, from_email, reply_to, tracking_enabled, is_sequence, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING id`,
-    [tenantId, name, listId, resolvedCategoryId, subCategoryId, subject, htmlBody,
+    [tenantId, name, listId, resolvedCategoryId, subCategoryId, subject, preheader, htmlBody,
       fromName, fromEmail, replyTo, Boolean(trackingEnabled), Boolean(isSequence), createdBy],
   );
 
@@ -46,8 +47,8 @@ export function getCampaign(id, tenantId = 1) {
 }
 
 const UPDATABLE = new Set([
-  'name', 'list_id', 'category_id', 'sub_category_id', 'subject', 'html_body', 'from_name', 'from_email',
-  'reply_to', 'tracking_enabled', 'is_sequence', 'scheduled_at',
+  'name', 'list_id', 'category_id', 'sub_category_id', 'subject', 'preheader', 'html_body', 'from_name',
+  'from_email', 'reply_to', 'tracking_enabled', 'is_sequence', 'scheduled_at',
 ]);
 
 export async function updateCampaign(id, patch, tenantId = 1) {
@@ -261,15 +262,16 @@ export function replaceSteps(campaignId, steps) {
 
     if (steps.length > 0) {
       await tx.execute(
-        `INSERT INTO sequence_steps (campaign_id, step_no, wait_days, subject, html_body)
-         SELECT $1, s.step_no, s.wait_days, s.subject, s.html_body
-           FROM unnest($2::int[], $3::int[], $4::text[], $5::text[])
-                AS s(step_no, wait_days, subject, html_body)`,
+        `INSERT INTO sequence_steps (campaign_id, step_no, wait_days, subject, preheader, html_body)
+         SELECT $1, s.step_no, s.wait_days, s.subject, s.preheader, s.html_body
+           FROM unnest($2::int[], $3::int[], $4::text[], $5::text[], $6::text[])
+                AS s(step_no, wait_days, subject, preheader, html_body)`,
         [
           campaignId,
           steps.map((_, i) => i + 1),
           steps.map((s, i) => (i === 0 ? 0 : Number(s.waitDays ?? 3))),
           steps.map((s) => s.subject ?? ''),
+          steps.map((s) => s.preheader ?? ''),
           steps.map((s) => s.htmlBody ?? ''),
         ],
       );

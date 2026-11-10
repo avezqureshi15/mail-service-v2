@@ -124,6 +124,18 @@ export function bodyHasUnsubscribe(html) {
 }
 
 /**
+ * Hidden preview text shown by mail clients in the inbox list, right after
+ * the subject. Padded with zero-width characters so a client's preview snippet
+ * is filled entirely by this text rather than spilling into the first line of
+ * the visible body.
+ */
+export function buildPreheader(text) {
+  if (!text) return '';
+  const padding = '&#8202;&zwnj;'.repeat(120);
+  return `<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">${escapeHtml(text)}${padding}</div>`;
+}
+
+/**
  * Assembles everything nodemailer needs for one recipient.
  *
  * @returns {{ message: object, messageId: string, unsubscribeUrl: string }}
@@ -161,6 +173,13 @@ export function composeMessage({
   if (!/\{\{\s*unsubscribe_url\s*\}\}/i.test(step.html_body || campaign.html_body)) {
     html += buildFooter(unsubUrl);
   }
+
+  const preheaderText = renderMergeFields(
+    step.preheader || campaign.preheader,
+    contact,
+    { escape: false },
+  ).trim();
+  if (preheaderText) html = buildPreheader(preheaderText) + html;
 
   if (campaign.tracking_enabled && env.trackingEnabled) {
     html = applyTracking(html, {

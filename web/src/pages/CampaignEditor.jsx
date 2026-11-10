@@ -1,17 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import TemplateSelector from '../components/TemplateSelector.jsx';
-import TemplateEditor from '../components/TemplateEditor.jsx';
-import TemplatePreview from '../components/TemplatePreview.jsx';
-import PreviewSidebar from '../components/PreviewSidebar.jsx';
+import WizardHeader from '../components/campaign-wizard/WizardHeader.jsx';
+import WizardStepper from '../components/campaign-wizard/WizardStepper.jsx';
+import StepSetupAudience from '../components/campaign-wizard/StepSetupAudience.jsx';
+import StepTemplateSelection from '../components/campaign-wizard/StepTemplateSelection.jsx';
+import StepDesignContent from '../components/campaign-wizard/StepDesignContent.jsx';
+import StepReviewSend from '../components/campaign-wizard/StepReviewSend.jsx';
 
-const BLANK_STEP = { subject: '', htmlBody: '', waitDays: 3 };
+const BLANK_STEP = {
+  subject: '', preheader: '', htmlBody: '', waitDays: 3,
+};
 
 export default function CampaignEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
   const editing = Boolean(id);
+
+  // A fresh campaign starts locked to step 1; an existing draft already has
+  // data in every step, so there is nothing to gate - any step is reachable
+  // from the moment it loads.
+  const [currentStep, setCurrentStep] = useState(1);
+  const [maxStepReached, setMaxStepReached] = useState(editing ? 4 : 1);
+  // Set when "Start from scratch" is chosen in step 2, so step 2 counts as
+  // answered without a template id to point to.
+  const [fromScratch, setFromScratch] = useState(false);
+  // Lifted out of TemplateEditor so step 3's top bar can show it next to the
+  // sequence step tabs instead of duplicating it inside the editor card.
+  const [mode, setMode] = useState('simple');
+  const [blockers, setBlockers] = useState([]);
 
   const [lists, setLists] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -24,13 +41,17 @@ export default function CampaignEditor() {
   // So the wait field can say "minutes" while sequence testing mode is on,
   // rather than claiming days and sending three minutes later.
   const [waitUnit, setWaitUnit] = useState('days');
+  // Gmail only accepts a From address that is the authenticated mailbox
+  // itself or one of its verified aliases - a per-campaign override would
+  // just fail (or get silently rewritten) at send time, so the wizard shows
+  // this read-only rather than letting it be typed.
+  const [configuredFromAddress, setConfiguredFromAddress] = useState('');
   const [form, setForm] = useState({
     name: '',
     listId: '',
     categoryId: '',
     subCategoryId: '',
     fromName: '',
-    fromEmail: '',
     replyTo: '',
     trackingEnabled: false,
   });
@@ -44,10 +65,6 @@ export default function CampaignEditor() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState(null);
-  // Setup first: the campaign name lives here and Save stays disabled without
-  // it, so opening on the Email tab left the button greyed out for a reason
-  // the rep could not see.
-  const [activeTab, setActiveTab] = useState('setup');
   // Only complain about an empty name once the rep has actually been in the
   // field - a form that is red before you touch it is just noise.
   const [nameTouched, setNameTouched] = useState(false);
@@ -63,6 +80,7 @@ export default function CampaignEditor() {
         setLists(listData.lists);
         setTrackingAvailable(dashboard.config.trackingConfigured);
         setWaitUnit(dashboard.sequenceWaitUnit ?? 'days');
+        setConfiguredFromAddress(dashboard.config?.fromAddress ?? '');
         setCategories(categoryData.categories ?? []);
         const defaultCategoryId = (categoryData.categories ?? [])
           .find((c) => c.name.toLowerCase() === 'uncategorised')?.id
@@ -77,12 +95,12 @@ export default function CampaignEditor() {
             categoryId: resolvedCategoryId,
             subCategoryId: String(campaign.sub_category_id ?? ''),
             fromName: campaign.from_name ?? '',
-            fromEmail: campaign.from_email ?? '',
             replyTo: campaign.reply_to ?? '',
             trackingEnabled: Boolean(campaign.tracking_enabled),
           });
           setSteps(campaign.steps.map((s) => ({
             subject: s.subject,
+            preheader: s.preheader ?? '',
             htmlBody: s.html_body,
             waitDays: s.wait_days,
           })));
@@ -130,8 +148,8 @@ export default function CampaignEditor() {
   // This used to fill every empty step with the same design, which suited a
   // set of templates that differed by look. The sequence templates differ by
   // *copy* - a reminder is not an opener - so one template across five steps
-  // would send the same message five times with Re: in front of it. Use
-  // "Load all steps" in the picker to set up a whole sequence at once.
+  // would send the same message five times with Re: in front of it. Choosing
+  // "Load all steps" in step 2 sets up a whole sequence at once instead.
   useEffect(() => {
     if (!selectedTemplate) return undefined;
     let cancelled = false;
@@ -161,6 +179,7 @@ export default function CampaignEditor() {
   const loadSequence = useCallback((ordered) => {
     setSteps(ordered.map((t, i) => ({
       subject: i === 0 ? (t.defaultSubject ?? '') : '',
+      preheader: '',
       htmlBody: t.content ?? '',
       waitDays: t.sequence?.waitDays ?? 0,
     })));
@@ -249,33 +268,46 @@ export default function CampaignEditor() {
     }
   }
 
-  async function save() {
+  function buildPayload() {
+    return {
+      name: form.name,
+      listId: form.listId ? Number(form.listId) : null,
+      categoryId: form.categoryId ? Number(form.categoryId) : null,
+      subCategoryId: form.subCategoryId ? Number(form.subCategoryId) : null,
+      subject: steps[0]?.subject ?? '',
+      preheader: steps[0]?.preheader ?? '',
+      htmlBody: steps[0]?.htmlBody ?? '',
+      fromName: form.fromName,
+      // Always empty: Gmail only accepts the configured mailbox (or a
+      // verified alias) as the From address, so there is no per-campaign
+      // override to send - compose.js falls back to env.MAIL_FROM_ADDRESS.
+      fromEmail: '',
+      replyTo: form.replyTo,
+      trackingEnabled: form.trackingEnabled,
+      steps: steps.map((step, index) => ({
+        subject: step.subject,
+        preheader: step.preheader,
+        htmlBody: step.htmlBody,
+        waitDays: index === 0 ? 0 : Number(step.waitDays) || 3,
+      })),
+    };
+  }
+
+  // Saves and stays on the editor, so a wizard in progress is never
+  // interrupted by a jump to the detail page. A brand-new campaign switches
+  // the URL to its edit route (so later saves go through PUT), without
+  // losing wizard state - that lives in this component, not the route.
+  async function saveDraft() {
     setError('');
     setBusy(true);
     try {
-      const payload = {
-        name: form.name,
-        listId: form.listId ? Number(form.listId) : null,
-        categoryId: form.categoryId ? Number(form.categoryId) : null,
-        subCategoryId: form.subCategoryId ? Number(form.subCategoryId) : null,
-        subject: steps[0]?.subject ?? '',
-        htmlBody: steps[0]?.htmlBody ?? '',
-        fromName: form.fromName,
-        fromEmail: form.fromEmail,
-        replyTo: form.replyTo,
-        trackingEnabled: form.trackingEnabled,
-        steps: steps.map((step, index) => ({
-          subject: step.subject,
-          htmlBody: step.htmlBody,
-          waitDays: index === 0 ? 0 : Number(step.waitDays) || 3,
-        })),
-      };
-
+      const payload = buildPayload();
       const result = editing
         ? await api.put(`/campaigns/${id}`, payload)
         : await api.post('/campaigns', payload);
-
-      navigate(`/campaigns/${result.campaign.id}`);
+      if (!editing) {
+        navigate(`/campaigns/${result.campaign.id}/edit`, { replace: true });
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -283,370 +315,184 @@ export default function CampaignEditor() {
     }
   }
 
-  const step = steps[activeStep];
+  async function sendNow() {
+    setError('');
+    setBlockers([]);
+    setBusy(true);
+    try {
+      const payload = buildPayload();
+      const result = editing
+        ? await api.put(`/campaigns/${id}`, payload)
+        : await api.post('/campaigns', payload);
+      await api.post(`/campaigns/${result.campaign.id}/start`);
+      navigate(`/campaigns/${result.campaign.id}`);
+    } catch (err) {
+      setError(err.message);
+      if (err.details) setBlockers(err.details);
+    } finally {
+      setBusy(false);
+    }
+  }
 
-  // What each step still needs, so the tabs can show progress and the Save
-  // button's disabled state is explained rather than just greyed out.
+  function goNext() {
+    setCurrentStep((current) => {
+      const next = Math.min(4, current + 1);
+      setMaxStepReached((max) => Math.max(max, next));
+      return next;
+    });
+  }
+
+  function goPrev() {
+    setCurrentStep((current) => Math.max(1, current - 1));
+  }
+
+  function jumpTo(stepId) {
+    setCurrentStep((current) => (stepId <= maxStepReached ? stepId : current));
+  }
+
+  function onChooseTemplate(templateId) {
+    setSelectedTemplate(templateId);
+    setFromScratch(false);
+    goNext();
+  }
+
+  function onLoadSequenceChoice(ordered) {
+    loadSequence(ordered);
+    goNext();
+  }
+
+  function onStartScratch() {
+    setSelectedTemplate(null);
+    setFromScratch(true);
+    goNext();
+  }
+
+  const firstStep = steps[0] ?? BLANK_STEP;
   const setupComplete = Boolean(form.name.trim());
-  const emailComplete = steps.every((s) => s.subject.trim() && s.htmlBody.trim());
+  // A follow-up step with no subject of its own inherits the first touch's
+  // (see compose.js's `step.subject || campaign.subject`) - that's the normal
+  // shape of a real sequence, not an incomplete one, so only step 0's subject
+  // is required. Every step still needs its own body - there's no reason a
+  // step would deliberately want to resend step 1's content verbatim.
+  const emailComplete = steps.every((s, i) => s.htmlBody.trim() && (i > 0 || s.subject.trim()));
+  const step1Complete = setupComplete;
+  const step2Complete = Boolean(selectedTemplate) || fromScratch;
+  const step3Complete = emailComplete;
 
   const selectedList = lists.find((list) => String(list.id) === String(form.listId));
 
-  // Pre-flight checklist shown next to the primary action so reps can see at
-  // a glance what still stands between them and a send.
   const checklist = [
     { label: 'Audience list selected', done: Boolean(form.listId) },
     { label: 'Campaign name set', done: setupComplete },
-    { label: 'Subject line present', done: steps.every((s) => s.subject.trim()) },
+    { label: 'Subject line present', done: Boolean(firstStep.subject.trim()) },
     { label: 'Email body present', done: emailComplete },
-    { label: 'Sender address set', done: Boolean(form.fromEmail || form.fromName) },
   ];
   const readyToLaunch = checklist.every((item) => item.done);
 
+  const continueDisabled = currentStep === 1 ? !step1Complete
+    : currentStep === 2 ? !step2Complete
+      : currentStep === 3 ? !step3Complete
+        : false;
+
   return (
-    <>
-      {/* Sticky, so Save and Cancel stay reachable however far the email
-          form is scrolled. */}
-      <div className="page-head sticky">
-        <div className="editor-title">
-          <h2 style={{ margin: 0 }}>{editing ? 'Edit campaign' : 'New campaign'}</h2>
-          <div className="campaign-metrics">
-            <span className="metric">
-              <span className="metric-label">Audience</span>
-              <strong>{selectedList ? `${selectedList.name} (${selectedList.contact_count})` : 'Not selected'}</strong>
-            </span>
-            <span className={`status-badge ${editing ? 'scheduled' : 'draft'}`}>
-              {editing ? 'Editing' : 'Draft'}
-            </span>
-          </div>
-        </div>
-        <div className="actions">
-          <button type="button" className="secondary" onClick={() => navigate('/campaigns')}>
-            Cancel
-          </button>
-          <button type="button" onClick={save} disabled={busy || !setupComplete}>
-            {busy ? 'Saving...' : 'Save'}
-          </button>
-        </div>
-      </div>
+    <div className="wizard-shell">
+      <WizardHeader
+        campaignName={form.name}
+        onBack={() => navigate('/campaigns')}
+        onSaveDraft={saveDraft}
+        saving={busy}
+        showPrevious={currentStep > 1}
+        onPrevious={goPrev}
+        showContinue={currentStep < 4}
+        onContinue={goNext}
+        continueDisabled={continueDisabled}
+      />
+      <WizardStepper currentStep={currentStep} maxStepReached={maxStepReached} onJump={jumpTo} />
 
-      {error && <div className="alert error">{error}</div>}
-
-      {/* Pre-flight checklist, kept beside the primary actions. */}
-      <div className="card launch-checklist-card">
-        <div className="launch-checklist-head">
-          <strong>Pre-flight checklist</strong>
-          <span className={`status-badge ${readyToLaunch ? 'scheduled' : 'draft'}`}>
-            {readyToLaunch ? 'Ready' : 'Incomplete'}
-          </span>
-        </div>
-        <ul className="launch-checklist">
-          {checklist.map((item) => (
-            <li key={item.label} className={item.done ? 'completed' : 'pending'}>
-              <span className="check-icon">{item.done ? '✓' : '○'}</span>
-              {item.label}
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* Numbered so the order is obvious, and marked so an incomplete step
-          is visible from whichever step you are on. */}
-      <div className="step-tabs">
-        <button
-          type="button"
-          className={`step-tab ${activeTab === 'setup' ? 'active' : ''} ${setupComplete ? 'done' : 'incomplete'}`}
-          onClick={() => setActiveTab('setup')}
-        >
-          <span className="num">{setupComplete ? '✓' : '1'}</span>
-          Setup
-        </button>
-        <button
-          type="button"
-          className={`step-tab ${activeTab === 'email' ? 'active' : ''} ${emailComplete ? 'done' : ''}`}
-          onClick={() => setActiveTab('email')}
-        >
-          <span className="num">{emailComplete ? '✓' : '2'}</span>
-          Write the email
-        </button>
-      </div>
-
-      {/* SETUP TAB */}
-      {activeTab === 'setup' && (
-        <div className="tab-content-setup">
-          <div className="card">
-            <h3>Campaign Details</h3>
-            <div className={`field ${nameTouched && !setupComplete ? 'invalid' : ''}`}>
-              <label htmlFor="name">Campaign name <span style={{ color: 'var(--bad)' }}>*</span></label>
-              <input
-                id="name"
-                type="text"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                onBlur={() => setNameTouched(true)}
-                placeholder="Internal name, not shown to recipients"
-              />
-              {nameTouched && !setupComplete
-                ? <div className="field-error">Required before the campaign can be saved</div>
-                : <div className="hint">Only you and the team see this, never the recipient.</div>}
-            </div>
-            <div className="field">
-              <label htmlFor="list">Contact list</label>
-              <select
-                id="list"
-                value={form.listId}
-                onChange={(e) => setForm({ ...form, listId: e.target.value })}
-              >
-                <option value="">Select a list</option>
-                {lists.map((list) => (
-                  <option key={list.id} value={list.id}>
-                    {list.name} ({list.contact_count} contacts)
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="category">Category</label>
-              <div className="category-row">
-                <select
-                  id="category"
-                  value={form.categoryId}
-                  onChange={(e) => changeCategory(e.target.value)}
-                >
-                  {categories.length === 0 && <option value="">Loading...</option>}
-                  {categories.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="secondary small"
-                  onClick={() => setAddingCategory((open) => !open)}
-                >
-                  {addingCategory ? 'Cancel' : 'New category'}
-                </button>
-              </div>
-              {addingCategory && (
-                <div className="category-row" style={{ marginTop: 8 }}>
-                  <input
-                    type="text"
-                    value={newCategory}
-                    maxLength={60}
-                    placeholder="e.g. Recruitment"
-                    onChange={(e) => setNewCategory(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') addCategory(); }}
-                  />
-                  <button
-                    type="button"
-                    onClick={addCategory}
-                    disabled={!newCategory.trim()}
-                  >
-                    Add
-                  </button>
-                </div>
-              )}
-              <div className="hint">Groups campaigns. Names are unique and shared across the team.</div>
-            </div>
-
-            <div className="field">
-              <label htmlFor="subcategory">Sub-category</label>
-              <div className="category-row">
-                <select
-                  id="subcategory"
-                  value={form.subCategoryId}
-                  onChange={(e) => setForm({ ...form, subCategoryId: e.target.value })}
-                  disabled={!form.categoryId}
-                >
-                  <option value="">No sub-category</option>
-                  {subCategories.map((subCategory) => (
-                    <option key={subCategory.id} value={subCategory.id}>
-                      {subCategory.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="secondary small"
-                  onClick={() => setAddingSubCategory((open) => !open)}
-                  disabled={!form.categoryId}
-                >
-                  {addingSubCategory ? 'Cancel' : 'New sub-category'}
-                </button>
-              </div>
-              {addingSubCategory && (
-                <div className="category-row" style={{ marginTop: 8 }}>
-                  <input
-                    type="text"
-                    value={newSubCategory}
-                    maxLength={60}
-                    placeholder="e.g. Engineering"
-                    onChange={(e) => setNewSubCategory(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') addSubCategory(); }}
-                  />
-                  <button
-                    type="button"
-                    onClick={addSubCategory}
-                    disabled={!newSubCategory.trim()}
-                  >
-                    Add
-                  </button>
-                </div>
-              )}
-              <div className="hint">
-                Narrows the category above. Sub-categories belong to the selected category.
-              </div>
-            </div>
-
-
-            <h3 style={{ marginTop: 24 }}>Sender Information</h3>
-            <div className="row">
-              <div className="field">
-                <label htmlFor="fromName">From name</label>
-                <input
-                  id="fromName"
-                  type="text"
-                  value={form.fromName}
-                  onChange={(e) => setForm({ ...form, fromName: e.target.value })}
-                  placeholder="Defaults to the service setting"
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="replyTo">Reply-to</label>
-                <input
-                  id="replyTo"
-                  type="email"
-                  value={form.replyTo}
-                  onChange={(e) => setForm({ ...form, replyTo: e.target.value })}
-                  placeholder="Where replies should land"
-                />
-              </div>
-            </div>
-
-            <div className="checkbox" style={{ marginTop: 18 }}>
-              <input
-                id="tracking"
-                type="checkbox"
-                checked={form.trackingEnabled}
-                disabled={!trackingAvailable}
-                onChange={(e) => setForm({ ...form, trackingEnabled: e.target.checked })}
-              />
-              <label htmlFor="tracking">
-                Track opens and clicks
-                <div className="hint">
-                  {trackingAvailable
-                    ? 'Off by default. Tracking pixels and rewritten links measurably reduce inbox placement, so leave this off for cold outreach and turn it on only for warmer sends.'
-                    : 'Unavailable - TRACKING_DOMAIN is not configured on the server.'}
-                </div>
-              </label>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* EMAIL TAB */}
-      {activeTab === 'email' && (
-        <div className="grid cols-2">
-          <div>
-            <TemplateSelector
-              onLoadSequence={loadSequence}
-              onSelect={setSelectedTemplate}
-              selectedTemplateId={selectedTemplate}
+      <div className="wizard-body">
+        {currentStep === 1 && (
+          <div className="wizard-page">
+            {error && <div className="alert error" style={{ marginBottom: 16, maxWidth: 760 }}>{error}</div>}
+            <StepSetupAudience
+              form={form}
+              setForm={setForm}
+              nameTouched={nameTouched}
+              setNameTouched={setNameTouched}
+              setupComplete={setupComplete}
+              firstStep={firstStep}
+              onFirstStepChange={(patch) => updateStep(0, patch)}
+              lists={lists}
+              categories={categories}
+              subCategories={subCategories}
+              newCategory={newCategory}
+              setNewCategory={setNewCategory}
+              addingCategory={addingCategory}
+              setAddingCategory={setAddingCategory}
+              addCategory={addCategory}
+              newSubCategory={newSubCategory}
+              setNewSubCategory={setNewSubCategory}
+              addingSubCategory={addingSubCategory}
+              setAddingSubCategory={setAddingSubCategory}
+              addSubCategory={addSubCategory}
+              changeCategory={changeCategory}
+              trackingAvailable={trackingAvailable}
+              configuredFromAddress={configuredFromAddress}
             />
-
-            <div className="card">
-              <div className="step-head">
-                <h3 style={{ margin: 0 }}>
-                  {steps.length > 1 ? `Sequence (${steps.length} steps)` : 'Message'}
-                </h3>
-                {steps.length < 10 && (
-                  <button type="button" className="secondary small" onClick={addStep}>
-                    Add follow-up step
-                  </button>
-                )}
-              </div>
-
-              {steps.length > 1 && (
-                <>
-                  <div className="preview-tabs">
-                    {steps.map((_, index) => (
-                      <button
-                        key={index}
-                        type="button"
-                        className={index === activeStep ? 'active' : ''}
-                        onClick={() => setActiveStep(index)}
-                      >
-                        Step {index + 1}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="alert info">
-                    Anyone who replies, unsubscribes or bounces is removed from the sequence
-                    automatically. Follow-ups are threaded onto the first message.
-                  </div>
-                </>
-              )}
-
-              {step && (
-                <div className="step">
-                  <div className="step-head">
-                    <strong>Step {activeStep + 1}{activeStep === 0 ? ' (first touch)' : ''}</strong>
-                    {activeStep > 0 && (
-                      <button
-                        type="button"
-                        className="secondary small"
-                        onClick={() => removeStep(activeStep)}
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-
-                  {activeStep > 0 && (
-                    <div className="field">
-                      <label htmlFor="wait">
-                        Send this many {waitUnit === 'minutes' ? 'minutes' : 'days'} after the previous step
-                      </label>
-                      <input
-                        id="wait"
-                        type="number"
-                        min="1"
-                        max="90"
-                        value={step.waitDays}
-                        onChange={(e) => updateStep(activeStep, { waitDays: e.target.value })}
-                      />
-                      {waitUnit === 'minutes' && (
-                        <div className="field-error">
-                          Sequence testing mode is on, so this is counted in minutes. Turn it
-                          off in Settings before a real campaign.
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <TemplateEditor
-                    templateId={selectedTemplate}
-                    currentStep={step}
-                    onContentChange={handleContentChange}
-                  />
-                </div>
-              )}
-            </div>
           </div>
+        )}
 
-          <PreviewSidebar
+        {currentStep === 2 && (
+          <div className="wizard-page">
+            {error && <div className="alert error" style={{ marginBottom: 16 }}>{error}</div>}
+            <StepTemplateSelection
+              onChooseTemplate={onChooseTemplate}
+              onLoadSequence={onLoadSequenceChoice}
+              onStartScratch={onStartScratch}
+            />
+          </div>
+        )}
+
+        {currentStep === 3 && (
+          <StepDesignContent
+            steps={steps}
+            activeStep={activeStep}
+            setActiveStep={setActiveStep}
+            addStep={addStep}
+            removeStep={removeStep}
+            updateStep={updateStep}
+            handleContentChange={handleContentChange}
+            selectedTemplate={selectedTemplate}
             lint={lint}
-            step={step}
+            waitUnit={waitUnit}
             mergeSample={{
               first_name: 'John',
               last_name: 'Smith',
               company: 'Acme Corp',
               email: 'john@acme.com',
             }}
+            mode={mode}
+            onModeChange={setMode}
           />
-        </div>
-      )}
-    </>
+        )}
+
+        {currentStep === 4 && (
+          <div className="wizard-page">
+            <StepReviewSend
+              form={form}
+              firstStep={firstStep}
+              selectedList={selectedList}
+              configuredFromAddress={configuredFromAddress}
+              checklist={checklist}
+              readyToLaunch={readyToLaunch}
+              busy={busy}
+              error={error}
+              blockers={blockers}
+              onSaveDraft={saveDraft}
+              onSendNow={sendNow}
+            />
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
