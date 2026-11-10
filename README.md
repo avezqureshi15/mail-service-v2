@@ -7,9 +7,16 @@ Set `MAIL_PROVIDER` to `google`, `zoho` or `other`. The preset supplies the host
 pair, the SPF include the checker verifies, the DKIM selector and the sending
 ceiling; nothing above the transport changes between them.
 
-- Node + Express API, SQLite, no Redis
+- Node + Express API, Supabase Postgres (`pg`), no Redis
 - React (Vite) UI
 - Target volume ~2,000/day
+
+## Guides
+
+| | |
+|---|---|
+| [DEPLOY.md](DEPLOY.md) | Docker image, Render, Netlify, environment variables |
+| [DNS-AND-PROVIDERS.md](DNS-AND-PROVIDERS.md) | SPF/DKIM/DMARC, GoDaddy, switching between Google and Zoho |
 
 ---
 
@@ -97,8 +104,8 @@ npm run dev
 ```
 
 API on `:4000`, UI on `:5173`. Both reload on save — the UI through Vite, the
-API through `node --watch`, which is scoped to `server/src` so the SQLite files
-the workers are constantly writing cannot trigger a restart loop.
+API through `node --watch`, which is scoped to `server/src` and `.env` so
+nothing else can trigger a restart loop.
 
 > If you start the API with `npm start` instead, it does **not** reload. Editing
 > a route and seeing `{"error":"Not found"}` almost always means the process is
@@ -286,8 +293,11 @@ End-to-end checks worth doing manually once the domain is live:
 
 ## Operational notes
 
-- **SQLite has no encryption at rest** and this database holds contact PII. Run it
-  on an encrypted volume. `server/data/` is gitignored.
+- **The database holds contact PII.** It lives in Supabase Postgres, which
+  encrypts at rest; the connection uses TLS. `DATABASE_URL` carries the
+  password, so it belongs in an environment variable and never in the repo —
+  `.gitignore` and `.dockerignore` both exclude every `.env*` except the
+  `.example` templates.
 - **IMAP must be on** for bounce suppression and reply detection. With it off,
   dead addresses are never suppressed and sequences do not stop on reply — the
   dashboard warns about this.
