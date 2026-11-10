@@ -270,7 +270,16 @@ campaignsRouter.post('/:id/preview', validate(z.object({
       : await sampleContact(campaign);
     if (!contact) return res.status(404).json({ error: 'Contact not found' });
 
-    const { message } = composeMessage({ campaign, step, contact });
+    // A follow-up is sent threaded onto step 1, which is what adds the "Re:"
+    // and the In-Reply-To header. Preview has to pass a thread id too, or it
+    // shows a subject the recipient will never see - and the rep concludes
+    // the follow-ups are not threading.
+    const { message } = composeMessage({
+      campaign,
+      step,
+      contact,
+      threadMessageId: step.step_no > 1 ? `<preview.step1@${env.SENDING_DOMAIN}>` : null,
+    });
     res.json({
       subject: message.subject,
       html: message.html,
