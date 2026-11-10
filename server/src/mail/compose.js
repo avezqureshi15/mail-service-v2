@@ -1,0 +1,188 @@
+import sanitizeHtml from 'sanitize-html';
+import { env } from '../config/env.js';
+import { htmlToText } from './plaintext.js';
+import { createUnsubscribeToken, createMessageId } from './tokens.js';
+import { applyTracking } from './tracking.js';
+
+/**
+ * Builds the message that actually goes on the wire.
+ *
+ * Two things are enforced here rather than left to the person writing the
+ * campaign: every message gets a genuine plain-text alternative, and every
+ * message gets a working unsubscribe - both the visible footer link and the
+ * RFC 8058 one-click headers.
+ */
+
+// Deliberately narrow. Mail clients support a small subset of HTML, and
+// anything executable is both useless and a spam signal.
+const SANITIZE_OPTIONS = {
+  allowedTags: [
+    'a', 'b', 'blockquote', 'br', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'hr',
+    'i', 'img', 'li', 'ol', 'p', 'span', 'strong', 'table', 'tbody', 'td',
+    'tfoot', 'th', 'thead', 'tr', 'u', 'ul',
+  ],
+  allowedAttributes: {
+    a: ['href', 'title', 'target', 'rel', 'style'],
+    img: ['src', 'alt', 'width', 'height', 'style'],
+    '*': ['style', 'align', 'valign', 'width', 'height', 'bgcolor', 'cellpadding', 'cellspacing', 'border'],
+  },
+  // No javascript: or data: URLs.
+  allowedSchemes: ['http', 'https', 'mailto'],
+  allowedSchemesByTag: { img: ['http', 'https', 'cid'] },
+  allowProtocolRelative: false,
+  disallowedTagsMode: 'discard',
+  // Drop the *contents* of these, not just the tags. Templates are often
+  // whole HTML documents, and without this the text inside <title> survives
+  // the strip and appears as a stray word at the top of the email body.
+  nonTextTags: ['style', 'script', 'textarea', 'option', 'noscript', 'title', 'head'],
+};
+
+export function sanitizeBody(html) {
+  return sanitizeHtml(html ?? '', SANITIZE_OPTIONS);
+}
+
+/**
+ * Replaces {{field}} with contact data. Values are HTML-escaped when the
+ * target is the HTML body, so a contact name containing markup cannot inject
+ * anything into the message.
+ */
+export function renderMergeFields(template, contact, { escape = true } = {}) {
+  if (!template) return '';
+
+  const custom = safeParse(contact.custom_fields);
+  const values = {
+    first_name: contact.first_name || '',
+    last_name: contact.last_name || '',
+    full_name: [contact.first_name, contact.last_name].filter(Boolean).join(' '),
+    company: contact.company || '',
+    email: contact.email || '',
+    ...custom,
+  };
+
+  return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+    const value = values[key];
+    if (value === undefined || value === null) return match;
+    return escape ? escapeHtml(String(value)) : String(value);
+  });
+}
+
+function safeParse(json) {
+  try {
+    const parsed = JSON.parse(json ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export function unsubscribeUrl(token) {
+  return `${env.APP_BASE_URL.replace(/\/$/, '')}/u/${token}`;
+}
+
+/**
+ * Appended to every message. Contains the two things a commercial email is
+ * required to carry: a working opt-out and a real postal address.
+ */
+export function buildFooter(unsubUrl) {
+  return [
+    '<div style="margin-top:28px;padding-top:14px;border-top:1px solid #dddddd;',
+    'font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#666666;">',
+    `<p style="margin:0 0 6px 0;">${escapeHtml(env.COMPANY_POSTAL_ADDRESS)}</p>`,
+    `<p style="margin:0;">Not interested? <a href="${unsubUrl}" style="color:#666666;text-decoration:underline;">Unsubscribe</a> and you will not hear from us again.</p>`,
+    '</div>',
+  ].join('');
+}
+
+export function bodyHasUnsubscribe(html) {
+  return /\{\{\s*unsubscribe_url\s*\}\}/i.test(html ?? '') || /unsubscrib/i.test(html ?? '');
+}
+
+/**
+ * Assembles everything nodemailer needs for one recipient.
+ *
+ * @returns {{ message: object, messageId: string, unsubscribeUrl: string }}
+ */
+export function composeMessage({
+  campaign,
+  step,
+  contact,
+  // Message-ID of step 1, so a follow-up threads onto the original
+  // conversation instead of arriving as a fresh cold email.
+  threadMessageId = null,
+}) {
+  const messageId = createMessageId(env.SENDING_DOMAIN);
+
+  const token = createUnsubscribeToken({
+    contactId: contact.id,
+    campaignId: campaign.id,
+    email: contact.email,
+  });
+  const unsubUrl = unsubscribeUrl(token);
+
+  const subject = renderMergeFields(step.subject || campaign.subject, contact, { escape: false }).trim();
+
+  // Sanitise first, then merge, then inject the footer - so a merge value can
+  // never introduce markup and the footer we add is never stripped.
+  let html = sanitizeBody(step.html_body || campaign.html_body);
+  html = renderMergeFields(html, contact);
+  html = html.replace(/\{\{\s*unsubscribe_url\s*\}\}/gi, unsubUrl);
+
+  // The footer is injected unless the author already placed the link
+  // themselves, so a campaign without an opt-out is not possible.
+  if (!/\{\{\s*unsubscribe_url\s*\}\}/i.test(step.html_body || campaign.html_body)) {
+    html += buildFooter(unsubUrl);
+  }
+
+  if (campaign.tracking_enabled && env.trackingEnabled) {
+    html = applyTracking(html, {
+      contactId: contact.id,
+      campaignId: campaign.id,
+      messageId,
+      unsubscribeUrl: unsubUrl,
+    });
+  }
+
+  const text = htmlToText(html);
+
+  const fromName = campaign.from_name || env.MAIL_FROM_NAME;
+  const fromAddress = campaign.from_email || env.MAIL_FROM_ADDRESS;
+  const replyTo = campaign.reply_to || env.replyTo;
+
+  const headers = {
+    // RFC 8058. Gmail and Yahoo surface a native Unsubscribe control when
+    // both of these are present, which keeps complaints off the spam button.
+    'List-Unsubscribe': `<${unsubUrl}>, <mailto:${fromAddress}?subject=unsubscribe>`,
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  };
+
+  if (threadMessageId) {
+    headers['In-Reply-To'] = threadMessageId;
+    headers.References = threadMessageId;
+  }
+
+  return {
+    messageId,
+    unsubscribeUrl: unsubUrl,
+    message: {
+      from: { name: fromName, address: fromAddress },
+      to: contact.email,
+      replyTo,
+      subject,
+      text,
+      html,
+      messageId,
+      headers,
+      // Nodemailer would otherwise advertise itself in an X-Mailer header.
+      xMailer: false,
+    },
+  };
+}

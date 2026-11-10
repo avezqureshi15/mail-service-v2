@@ -1,0 +1,92 @@
+# Netlify configuration for the mail-service-v2 frontend.
+#
+# Backend: https://mail-service-v2-latest.onrender.com
+# If the Render service is renamed, update all three redirects below.
+#
+# WHY THE PROXY, rather than calling Render directly from the browser:
+#
+# The app authenticates with a session cookie. If the React app on
+# netlify.app called an onrender.com API directly, that cookie would be a
+# third-party cookie - Safari blocks those outright and Chrome is phasing
+# them out, so people would appear to log in and then be logged out on the
+# next request. Browsers would also need SameSite=None, which weakens CSRF
+# protection for everyone.
+#
+# Proxying through Netlify means the browser only ever talks to one origin.
+# The cookie stays first-party, SameSite=Lax keeps working, and no CORS
+# configuration is needed at all. The cost is one extra network hop.
+#
+# It also means unsubscribe links in emails live on your own domain rather
+# than onrender.com, which reads better and is kinder to deliverability.
+
+# This file lives at the REPOSITORY ROOT, which is where Netlify looks for it.
+# `base` moves the build into web/; `publish` and the functions directory are
+# then resolved relative to that base, so they stay relative paths.
+[build]
+  base    = "web"
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Scheduled function that stops the Render free instance from spinning down.
+# See netlify/functions/keep-alive.mjs for why it lives here rather than in
+# the backend.
+[functions]
+  directory = "netlify/functions"
+
+# --- API and server-rendered pages, proxied to Render ----------------------
+# These must come before the SPA fallback, or the catch-all swallows them.
+
+[[redirects]]
+  from   = "/api/*"
+  to     = "https://mail-service-v2-latest.onrender.com/api/:splat"
+  status = 200
+  force  = true
+
+# Unsubscribe pages. Served as HTML by the backend, and reached by people who
+# have never opened the app - this must work for a logged-out stranger.
+[[redirects]]
+  from   = "/u/*"
+  to     = "https://mail-service-v2-latest.onrender.com/u/:splat"
+  status = 200
+  force  = true
+
+# Open/click tracking. Unused while TRACKING_DOMAIN is blank, but wired up so
+# turning tracking on later needs no deploy change here.
+[[redirects]]
+  from   = "/t/*"
+  to     = "https://mail-service-v2-latest.onrender.com/t/:splat"
+  status = 200
+  force  = true
+
+# --- SPA fallback ----------------------------------------------------------
+# Last, so every other route above wins. Without this a refresh on
+# /campaigns/12 returns a 404 from Netlify instead of loading the app.
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
+
+# --- Headers ---------------------------------------------------------------
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options        = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy        = "strict-origin-when-cross-origin"
+
+# Vite emits content-hashed filenames, so these can be cached indefinitely.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# index.html must not be cached, or a deploy leaves people on the old bundle
+# pointing at asset files that no longer exist.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"

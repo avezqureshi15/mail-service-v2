@@ -1,0 +1,40 @@
+{
+  "name": "mail-service-v2-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch-path=./src --watch-path=./.env src/index.js",
+    "migrate": "node scripts/migrate.js",
+    "seed:admin": "node scripts/seed-admin.js",
+    "check:dns": "node scripts/check-dns.js",
+    "check:smtp": "node scripts/smtp-test.js",
+    "warmup:plan": "node scripts/warmup-plan.js",
+    "test": "node --test \"test/*.test.js\"",
+    "dns:plan": "node scripts/dns-plan.js",
+    "setup": "node scripts/setup.js",
+    "preflight": "node scripts/preflight.js",
+    "diagnose:smtp": "node scripts/diagnose-smtp.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "connect-pg-simple": "^10.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "csv-parse": "^5.6.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "express-session": "^1.18.1",
+    "helmet": "^8.0.0",
+    "imapflow": "^1.0.188",
+    "juice": "^12.2.1",
+    "mailparser": "^3.7.2",
+    "multer": "^2.0.0",
+    "nodemailer": "^6.10.0",
+    "pg": "^8.23.1",
+    "sanitize-html": "^2.14.0",
+    "zod": "^3.24.2"
+  }
+}

@@ -1,0 +1,22 @@
+node_modules/
+
+# Holds live SMTP/IMAP credentials. .env.example is the only one tracked.
+.env
+.env.*
+!.env.example
+# A checklist of what to set in Render's dashboard. Contains no secrets -
+# every credential in it is a <placeholder>.
+!.env.production.example
+
+*.log
+
+# SQLite database and WAL sidecars - contains contact PII, never commit
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
+
+web/dist/
+.DS_Store
+
+# Personal Claude Code permissions, not shared config.
+.claude/settings.local.json

@@ -1,0 +1,21 @@
+# Secrets. The image must never carry these - Render supplies them at run
+# time. Listed first because it is the one entry that really matters.
+.env
+.env.*
+!.env.example
+
+node_modules
+npm-debug.log*
+
+# Not needed at run time.
+test
+data
+*.db
+*.db-journal
+*.sqlite*
+
+Dockerfile
+.dockerignore
+.git
+.gitignore
+*.md

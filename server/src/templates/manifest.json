@@ -1,0 +1,229 @@
+{
+  "templates": [
+    {
+      "id": "dark-professional",
+      "name": "Dark Professional",
+      "description": "Sophisticated dark theme with gradient accents. Perfect for modern, high-impact outreach that stands out in the inbox.",
+      "file": "dark-professional.html",
+      "category": "professional",
+      "colors": ["#667eea", "#764ba2", "#1a1a1a"],
+      "bestFor": [
+        "Professional outreach",
+        "B2B partnerships",
+        "Executive engagement",
+        "High-impact campaigns",
+        "Tech-forward companies"
+      ],
+      "features": {
+        "hasHeader": true,
+        "hasFooter": true,
+        "hasButton": true,
+        "darkTheme": true,
+        "responsive": true
+      },
+      "mergeFields": [
+        "{{first_name}}",
+        "{{last_name}}",
+        "{{company}}",
+        "{{email}}"
+      ]
+    },
+    {
+      "id": "light-professional",
+      "name": "Light Professional",
+      "description": "Clean, modern light design with blue accents. Ideal for professional B2B outreach with a trustworthy, corporate feel.",
+      "file": "light-professional.html",
+      "category": "professional",
+      "colors": ["#0066cc", "#ffffff", "#f8f9fa"],
+      "bestFor": [
+        "Professional outreach",
+        "Partnership proposals",
+        "Business development",
+        "Corporate communications",
+        "Sales outreach"
+      ],
+      "features": {
+        "hasHeader": true,
+        "hasFooter": true,
+        "hasButton": true,
+        "hasStats": true,
+        "responsive": true
+      },
+      "mergeFields": [
+        "{{first_name}}",
+        "{{last_name}}",
+        "{{company}}",
+        "{{email}}"
+      ]
+    },
+    {
+      "id": "modern-gradient-pro",
+      "name": "Modern Gradient Pro",
+      "description": "Premium gradient design with feature lists and testimonials. Best for high-value opportunities and enterprise sales.",
+      "file": "modern-gradient-pro.html",
+      "category": "professional",
+      "colors": ["#667eea", "#764ba2", "#ffffff"],
+      "bestFor": [
+        "Enterprise sales",
+        "Premium partnerships",
+        "High-ticket outreach",
+        "Recruitment",
+        "Strategic partnerships"
+      ],
+      "features": {
+        "hasHeader": true,
+        "hasFooter": true,
+        "hasButton": true,
+        "hasFeatures": true,
+        "hasTestimonial": true,
+        "responsive": true
+      },
+      "mergeFields": [
+        "{{first_name}}",
+        "{{last_name}}",
+        "{{company}}",
+        "{{email}}"
+      ]
+    },
+    {
+      "id": "modern-minimal",
+      "name": "Modern Minimal",
+      "description": "Clean, minimalist design perfect for quick outreach. Features a simple layout with a prominent call-to-action button.",
+      "file": "modern-minimal.html",
+      "category": "outreach",
+      "colors": ["#3b82f6", "#ffffff"],
+      "bestFor": [
+        "First touch outreach",
+        "Quick engagement emails",
+        "Simple value propositions",
+        "B2B prospecting"
+      ],
+      "features": {
+        "hasHeader": true,
+        "hasFooter": true,
+        "hasButton": true,
+        "responsive": true
+      },
+      "mergeFields": [
+        "{{first_name}}",
+        "{{last_name}}",
+        "{{company}}",
+        "{{email}}"
+      ]
+    },
+    {
+      "id": "professional-business",
+      "name": "Professional Business",
+      "description": "Polished gradient design with feature highlights. Ideal for enterprise-level communications with detailed value propositions.",
+      "file": "professional-business.html",
+      "category": "professional",
+      "colors": ["#667eea", "#764ba2", "#ffffff"],
+      "bestFor": [
+        "Enterprise proposals",
+        "Demo scheduling",
+        "Partnership opportunities",
+        "High-value outreach",
+        "B2B communications"
+      ],
+      "features": {
+        "hasHeader": true,
+        "hasFooter": true,
+        "hasButton": true,
+        "hasFeatures": true,
+        "responsive": true
+      },
+      "mergeFields": [
+        "{{first_name}}",
+        "{{last_name}}",
+        "{{company}}",
+        "{{email}}"
+      ]
+    },
+    {
+      "id": "newsletter-modern",
+      "name": "Newsletter Modern",
+      "description": "Multi-section newsletter layout with article cards and statistics. Perfect for updates, product announcements, and content distribution.",
+      "file": "newsletter-modern.html",
+      "category": "newsletter",
+      "colors": ["#4d96ff", "#ffffff", "#f9f9f9"],
+      "bestFor": [
+        "Weekly newsletters",
+        "Product updates",
+        "Content digest",
+        "Announcements",
+        "Community updates"
+      ],
+      "features": {
+        "hasHeader": true,
+        "hasFooter": true,
+        "hasButton": true,
+        "hasStats": true,
+        "multiSection": true,
+        "responsive": true
+      },
+      "mergeFields": [
+        "{{first_name}}",
+        "{{last_name}}",
+        "{{company}}",
+        "{{email}}"
+      ]
+    },
+    {
+      "id": "corporate-elegant",
+      "name": "Corporate Elegant",
+      "description": "Sophisticated serif design with gold accents. Premium look suitable for executive communications and formal proposals.",
+      "file": "corporate-elegant.html",
+      "category": "executive",
+      "colors": ["#1a1a1a", "#d4af37", "#ffffff"],
+      "bestFor": [
+        "Executive outreach",
+        "Formal proposals",
+        "C-suite communications",
+        "Premium partnerships",
+        "High-touch engagement"
+      ],
+      "features": {
+        "hasHeader": true,
+        "hasFooter": true,
+        "hasButton": true,
+        "hasBenefits": true,
+        "serif": true,
+        "responsive": true
+      },
+      "mergeFields": [
+        "{{first_name}}",
+        "{{last_name}}",
+        "{{company}}",
+        "{{email}}"
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "id": "professional",
+      "name": "Professional",
+      "description": "Premium business-focused templates for sales and partnerships (6 templates)"
+    },
+    {
+      "id": "outreach",
+      "name": "Quick Outreach",
+      "description": "Minimalist templates for fast prospecting and engagement"
+    },
+    {
+      "id": "newsletter",
+      "name": "Newsletter",
+      "description": "Templates for updates, announcements, and content distribution"
+    },
+    {
+      "id": "executive",
+      "name": "Executive",
+      "description": "Premium templates for C-suite and high-level communications"
+    }
+  ],
+  "mergeFieldsGuide": {
+    "{{first_name}}": "Recipient's first name",
+    "{{last_name}}": "Recipient's last name",
+    "{{company}}": "Recipient's company name",
+    "{{email}}": "Recipient's email address"
+  }
+}
