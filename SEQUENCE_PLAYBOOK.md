@@ -126,8 +126,9 @@ filtered out before import, rather than mailed and ignored.
 Plain on purpose. No images, no buttons, no colour blocks, no header bar.
 System fonts, one thin rule above the signature.
 
-This is not laziness, and it is measurable. Running every template in the
-repo through the built-in spam linter:
+This is not laziness, and it is measurable. The repo previously carried
+seven designed templates - gradient headers, CTA buttons, stat blocks. Run
+through the built-in spam linter alongside these, before they were removed:
 
 ```
 outreach-01-opener         sequence      100   0 warnings   0 links
@@ -141,12 +142,19 @@ newsletter-modern          newsletter     84   2 warnings   9 links
 ```
 
 The gap is link count and markup weight. For a cold first contact, a
-designed template says "this is a campaign" before a word is read — which
+designed template says "this is a campaign" before a word is read - which
 works against rules 1 through 5 at the same time as it works against inbox
 placement.
 
-The designed templates are still the right choice for warm audiences:
-existing clients, newsletters, announcements. Use them there.
+**Those seven were deleted deliberately.** They were only ever right for warm
+audiences - existing clients, newsletters, announcements - and this service
+sends cold outreach. Leaving them in the picker meant a rep could pick one
+for a prospecting campaign and quietly undo everything above. They are in
+git history if a newsletter is ever needed:
+
+```bash
+git log --diff-filter=D --name-only -- server/src/templates
+```
 
 ### Editing the copy
 

@@ -7,8 +7,11 @@ Sales people can now **select email templates**, **edit content in a simple form
 ## ✨ Features
 
 ### 1. **Template Selector**
-- Browse 4 professional pre-made templates
-- Filter by category (Outreach, Professional, Newsletter, Executive)
+- Browse the pre-made templates
+- Filter by category
+- The repo currently ships one category, Cold Outreach Sequence - five plain
+  templates meant to be used in order. See SEQUENCE_PLAYBOOK.md for why they
+  carry no images, buttons or colour blocks.
 - Visual cards showing template name, description, best-use cases, and color scheme
 - Click to select - updates automatically
 
@@ -43,10 +46,11 @@ server/src/templates/
 ├── manifest.json            # Template registry & metadata
 ├── templates.js             # Node.js module for loading templates
 ├── README.md                # Documentation
-├── modern-minimal.html      # Template 1
-├── professional-business.html # Template 2
-├── newsletter-modern.html   # Template 3
-└── corporate-elegant.html   # Template 4
+├── outreach-01-opener.html        # Sequence step 1
+├── outreach-02-reminder.html      # Sequence step 2
+├── outreach-03-their-process.html # Sequence step 3
+├── outreach-04-use-case.html      # Sequence step 4
+└── outreach-05-break-up.html      # Sequence step 5
 
 server/src/routes/
 └── templates.js             # API endpoints for templates
@@ -102,7 +106,7 @@ GET  /api/templates/by-category/:id     # Get templates by category
 ```json
 {
   "template": {
-    "id": "modern-minimal",
+    "id": "outreach-01-opener",
     "name": "Modern Minimal",
     "description": "Clean, minimalist design...",
     "category": "outreach",

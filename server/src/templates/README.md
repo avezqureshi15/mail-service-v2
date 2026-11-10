@@ -4,34 +4,38 @@ This directory contains pre-made, modern HTML email templates for use in your ma
 
 ## Available Templates
 
-### 1. Modern Minimal
-**File:** `modern-minimal.html`
-- Clean, minimalist design with a modern tech feel
-- Perfect for quick outreach and first touches
-- Primary color: Blue (#3b82f6)
-- Best for: B2B prospecting, simple engagement
+One category: **Cold Outreach Sequence**. Five plain templates meant to be
+used in order as the steps of one campaign.
 
-### 2. Professional Business
-**File:** `professional-business.html`
-- Polished gradient design with prominent header
-- Includes feature highlights section
-- Features gradient backgrounds and shadows
-- Best for: Enterprise proposals, demo scheduling, partnership offers
+| # | File | Wait | Role |
+|---|---|---|---|
+| 1 | `outreach-01-opener.html` | — | Problem first, evidence-personalised, ends on a question |
+| 2 | `outreach-02-reminder.html` | 3d | Short nudge on the same thread |
+| 3 | `outreach-03-their-process.html` | 4d | Asks how they screen today |
+| 4 | `outreach-04-use-case.html` | 5d | One concrete scenario |
+| 5 | `outreach-05-break-up.html` | 6d | Closes the loop, asks for nothing |
 
-### 3. Newsletter Modern
-**File:** `newsletter-modern.html`
-- Multi-section layout for content distribution
-- Includes statistics/metrics display
-- Multiple article cards for updates
-- Color gradient accent bar at top
-- Best for: Weekly newsletters, product updates, announcements
+### These are deliberately plain
 
-### 4. Corporate Elegant
-**File:** `corporate-elegant.html`
-- Sophisticated serif typography with gold accents
-- Premium look for executive communications
-- Includes benefits section
-- Best for: C-suite outreach, formal proposals, high-touch engagement
+No images, no buttons, no colour blocks, no header bar. System fonts, one
+thin rule above the signature.
+
+That is the design, not an omission. A designed template announces itself as
+a campaign before a word is read, which costs both replies and inbox
+placement on a cold first contact. All five score 100 on the built-in spam
+linter; the seven designed templates this repo used to carry scored 84-92,
+the gap being link count and markup weight.
+
+**Before adding a header bar, brand colour or CTA button, read
+`SEQUENCE_PLAYBOOK.md` at the repo root.** It explains the eight copy rules
+the wording follows and why the plainness matters.
+
+The old designed templates remain in git history if a newsletter is ever
+needed:
+
+```bash
+git log --diff-filter=D --name-only -- server/src/templates
+```
 
 ## Using Templates in Campaigns
 
@@ -51,7 +55,7 @@ import { loadTemplate, getTemplateList } from './templates.js';
 const templates = getTemplateList();
 
 // Load a specific template
-const template = loadTemplate('modern-minimal');
+const template = loadTemplate('outreach-01-opener');
 // Returns: { id, name, description, content, ... }
 ```
 
