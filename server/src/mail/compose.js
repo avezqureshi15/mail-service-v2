@@ -75,6 +75,23 @@ function safeParse(json) {
   }
 }
 
+/**
+ * Prefixes a follow-up's subject with "Re:".
+ *
+ * Follow-ups already thread correctly - In-Reply-To and References do that
+ * work, and mail clients group on those rather than on the subject. But a
+ * step with no subject of its own inherits the campaign's, so without this
+ * the thread reads as the same fresh subject line sent three times, which
+ * looks automated to a recipient reading it top to bottom.
+ *
+ * Only ever one "Re:" - mail clients already dislike the "Re: Re: Re:" that
+ * naive prefixing produces, and so do people.
+ */
+function threadedSubject(subject, threadMessageId) {
+  if (!threadMessageId || !subject) return subject;
+  return /^re\s*:/i.test(subject) ? subject : `Re: ${subject}`;
+}
+
 function escapeHtml(value) {
   return value
     .replace(/&/g, '&amp;')
@@ -128,7 +145,10 @@ export function composeMessage({
   });
   const unsubUrl = unsubscribeUrl(token);
 
-  const subject = renderMergeFields(step.subject || campaign.subject, contact, { escape: false }).trim();
+  const subject = threadedSubject(
+    renderMergeFields(step.subject || campaign.subject, contact, { escape: false }).trim(),
+    threadMessageId,
+  );
 
   // Sanitise first, then merge, then inject the footer - so a merge value can
   // never introduce markup and the footer we add is never stripped.

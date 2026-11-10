@@ -6,7 +6,11 @@
       "description": "Sophisticated dark theme with gradient accents. Perfect for modern, high-impact outreach that stands out in the inbox.",
       "file": "dark-professional.html",
       "category": "professional",
-      "colors": ["#667eea", "#764ba2", "#1a1a1a"],
+      "colors": [
+        "#667eea",
+        "#764ba2",
+        "#1a1a1a"
+      ],
       "bestFor": [
         "Professional outreach",
         "B2B partnerships",
@@ -34,7 +38,11 @@
       "description": "Clean, modern light design with blue accents. Ideal for professional B2B outreach with a trustworthy, corporate feel.",
       "file": "light-professional.html",
       "category": "professional",
-      "colors": ["#0066cc", "#ffffff", "#f8f9fa"],
+      "colors": [
+        "#0066cc",
+        "#ffffff",
+        "#f8f9fa"
+      ],
       "bestFor": [
         "Professional outreach",
         "Partnership proposals",
@@ -62,7 +70,11 @@
       "description": "Premium gradient design with feature lists and testimonials. Best for high-value opportunities and enterprise sales.",
       "file": "modern-gradient-pro.html",
       "category": "professional",
-      "colors": ["#667eea", "#764ba2", "#ffffff"],
+      "colors": [
+        "#667eea",
+        "#764ba2",
+        "#ffffff"
+      ],
       "bestFor": [
         "Enterprise sales",
         "Premium partnerships",
@@ -91,7 +103,10 @@
       "description": "Clean, minimalist design perfect for quick outreach. Features a simple layout with a prominent call-to-action button.",
       "file": "modern-minimal.html",
       "category": "outreach",
-      "colors": ["#3b82f6", "#ffffff"],
+      "colors": [
+        "#3b82f6",
+        "#ffffff"
+      ],
       "bestFor": [
         "First touch outreach",
         "Quick engagement emails",
@@ -117,7 +132,11 @@
       "description": "Polished gradient design with feature highlights. Ideal for enterprise-level communications with detailed value propositions.",
       "file": "professional-business.html",
       "category": "professional",
-      "colors": ["#667eea", "#764ba2", "#ffffff"],
+      "colors": [
+        "#667eea",
+        "#764ba2",
+        "#ffffff"
+      ],
       "bestFor": [
         "Enterprise proposals",
         "Demo scheduling",
@@ -145,7 +164,11 @@
       "description": "Multi-section newsletter layout with article cards and statistics. Perfect for updates, product announcements, and content distribution.",
       "file": "newsletter-modern.html",
       "category": "newsletter",
-      "colors": ["#4d96ff", "#ffffff", "#f9f9f9"],
+      "colors": [
+        "#4d96ff",
+        "#ffffff",
+        "#f9f9f9"
+      ],
       "bestFor": [
         "Weekly newsletters",
         "Product updates",
@@ -174,7 +197,11 @@
       "description": "Sophisticated serif design with gold accents. Premium look suitable for executive communications and formal proposals.",
       "file": "corporate-elegant.html",
       "category": "executive",
-      "colors": ["#1a1a1a", "#d4af37", "#ffffff"],
+      "colors": [
+        "#1a1a1a",
+        "#d4af37",
+        "#ffffff"
+      ],
       "bestFor": [
         "Executive outreach",
         "Formal proposals",
@@ -196,6 +223,156 @@
         "{{company}}",
         "{{email}}"
       ]
+    },
+    {
+      "id": "outreach-01-opener",
+      "name": "1. Opener - the problem",
+      "file": "outreach-01-opener.html",
+      "description": "Opens on the prospect's own situation using researched evidence, then introduces the product as one possible answer. Ends with a question, not a demo link.",
+      "bestFor": [
+        "Step 1 of a cold sequence",
+        "IT staffing and RPO prospects",
+        "Evidence-based personalisation"
+      ],
+      "mergeFields": [
+        "{{first_name}}",
+        "{{observation}}"
+      ],
+      "category": "sequence",
+      "colors": [
+        "#1a1a1a",
+        "#ffffff",
+        "#e4e4e4"
+      ],
+      "features": {
+        "hasHeader": false,
+        "hasFooter": false,
+        "hasButton": false,
+        "plainStyle": true,
+        "responsive": true
+      },
+      "sequence": {
+        "step": 1,
+        "waitDays": 0
+      }
+    },
+    {
+      "id": "outreach-02-reminder",
+      "name": "2. Reminder",
+      "file": "outreach-02-reminder.html",
+      "description": "A short nudge on the same thread. Repeats the question rather than the pitch.",
+      "bestFor": [
+        "2-3 business days after the opener"
+      ],
+      "mergeFields": [
+        "{{first_name}}"
+      ],
+      "category": "sequence",
+      "colors": [
+        "#1a1a1a",
+        "#ffffff",
+        "#e4e4e4"
+      ],
+      "features": {
+        "hasHeader": false,
+        "hasFooter": false,
+        "hasButton": false,
+        "plainStyle": true,
+        "responsive": true
+      },
+      "sequence": {
+        "step": 2,
+        "waitDays": 3
+      }
+    },
+    {
+      "id": "outreach-03-their-process",
+      "name": "3. Ask about their process",
+      "file": "outreach-03-their-process.html",
+      "description": "Asks how they screen today. Invites a reply even from someone who will never buy, which is still worth more than silence.",
+      "bestFor": [
+        "3-4 business days after the reminder"
+      ],
+      "mergeFields": [
+        "{{first_name}}"
+      ],
+      "category": "sequence",
+      "colors": [
+        "#1a1a1a",
+        "#ffffff",
+        "#e4e4e4"
+      ],
+      "features": {
+        "hasHeader": false,
+        "hasFooter": false,
+        "hasButton": false,
+        "plainStyle": true,
+        "responsive": true
+      },
+      "sequence": {
+        "step": 3,
+        "waitDays": 4
+      }
+    },
+    {
+      "id": "outreach-04-use-case",
+      "name": "4. Specific use case",
+      "file": "outreach-04-use-case.html",
+      "description": "One concrete scenario in their own domain. The first message that describes the product in any detail.",
+      "bestFor": [
+        "4-5 business days after the process question"
+      ],
+      "mergeFields": [
+        "{{first_name}}",
+        "{{role_examples}}"
+      ],
+      "category": "sequence",
+      "colors": [
+        "#1a1a1a",
+        "#ffffff",
+        "#e4e4e4"
+      ],
+      "features": {
+        "hasHeader": false,
+        "hasFooter": false,
+        "hasButton": false,
+        "plainStyle": true,
+        "responsive": true
+      },
+      "sequence": {
+        "step": 4,
+        "waitDays": 5
+      }
+    },
+    {
+      "id": "outreach-05-break-up",
+      "name": "5. Break-up",
+      "file": "outreach-05-break-up.html",
+      "description": "Closes the loop and stops. Often the highest-reply message in a sequence, because it asks for nothing.",
+      "bestFor": [
+        "Final step",
+        "Leaving the door open"
+      ],
+      "mergeFields": [
+        "{{first_name}}"
+      ],
+      "category": "sequence",
+      "colors": [
+        "#1a1a1a",
+        "#ffffff",
+        "#e4e4e4"
+      ],
+      "features": {
+        "hasHeader": false,
+        "hasFooter": false,
+        "hasButton": false,
+        "plainStyle": true,
+        "responsive": true
+      },
+      "sequence": {
+        "step": 5,
+        "waitDays": 6
+      }
     }
   ],
   "categories": [
@@ -218,6 +395,11 @@
       "id": "executive",
       "name": "Executive",
       "description": "Premium templates for C-suite and high-level communications"
+    },
+    {
+      "id": "sequence",
+      "name": "Cold Outreach Sequence",
+      "description": "A five-step prospecting sequence. Plain by design - no images, no buttons, no colour blocks - so it reads as a person writing rather than a campaign. Use the steps in order."
     }
   ],
   "mergeFieldsGuide": {

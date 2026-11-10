@@ -13,6 +13,7 @@ import {
 } from '../db/repositories/jobs.js';
 import { logAction } from '../db/repositories/users.js';
 import { lintContent } from '../mail/spam-lint.js';
+import { auditMergeFields, describeAudit } from '../lib/merge-fields.js';
 import { composeMessage, bodyHasUnsubscribe, sanitizeBody } from '../mail/compose.js';
 import { getTransport } from '../mail/transport.js';
 import { requireAuth, validate } from '../middleware/index.js';
@@ -363,6 +364,20 @@ campaignsRouter.post('/:id/start', async (req, res, next) => {
     const recipients = await mailableListMembers(campaign.list_id);
     if (recipients.length === 0) {
       return res.status(400).json({ error: 'No mailable contacts in that list (all suppressed or inactive)' });
+    }
+
+    // Checked here, with the recipient list in hand, because whether a merge
+    // field can be filled is a property of the contacts rather than of the
+    // copy. An unfillable field would otherwise reach a prospect as literal
+    // {{template_syntax}} - worse than no personalisation, since it reveals
+    // the mail merge in the opening line.
+    const audit = auditMergeFields(steps, recipients);
+    if (!audit.ok) {
+      return res.status(400).json({
+        error: `${audit.contactsAffected} of ${audit.totalContacts} contacts are missing data this campaign uses`,
+        detail: 'Fill these in on the contacts, or remove the fields from the copy.',
+        fields: describeAudit(audit),
+      });
     }
 
     let queued = 0;
