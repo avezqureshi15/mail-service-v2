@@ -20,3 +20,6 @@ web/dist/
 
 # Personal Claude Code permissions, not shared config.
 .claude/settings.local.json
+
+# Local import fixtures - these held real addresses, and this repo is public.
+testdata/
