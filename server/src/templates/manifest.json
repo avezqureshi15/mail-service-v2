@@ -30,7 +30,8 @@
       "sequence": {
         "step": 1,
         "waitDays": 0
-      }
+      },
+      "defaultSubject": "Preliminary screening for {{role_examples}}"
     },
     {
       "id": "outreach-02-reminder",

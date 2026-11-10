@@ -38,6 +38,10 @@ export function getTemplateList() {
     colors: template.colors,
     bestFor: template.bestFor,
     features: template.features,
+    // Lets the editor offer "load the whole sequence" - the step order and
+    // waits live here rather than being hardcoded in the frontend.
+    sequence: template.sequence ?? null,
+    defaultSubject: template.defaultSubject ?? '',
   }));
 }
 

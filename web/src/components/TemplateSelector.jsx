@@ -9,7 +9,7 @@ import { api } from '../lib/api.js';
  * grid collapses to a single row - seven full-height cards between the top of
  * the page and the editor is most of a screen of scrolling on every visit.
  */
-export default function TemplateSelector({ onSelect, selectedTemplateId }) {
+export default function TemplateSelector({ onSelect, selectedTemplateId, onLoadSequence }) {
   const [templates, setTemplates] = useState([]);
   const [categories, setCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -40,6 +40,14 @@ export default function TemplateSelector({ onSelect, selectedTemplateId }) {
   const filtered = selectedCategory === 'all'
     ? templates
     : templates.filter((t) => t.category === selectedCategory);
+
+  // Templates that declare a position in a sequence, in order. These are
+  // meant to be used together as the steps of one campaign, not chosen
+  // between - so the picker offers to load the set rather than leaving
+  // someone to add five steps and paste five templates by hand.
+  const sequence = templates
+    .filter((t) => t.sequence)
+    .sort((a, b) => a.sequence.step - b.sequence.step);
 
   function choose(id) {
     onSelect(id);
@@ -99,6 +107,20 @@ export default function TemplateSelector({ onSelect, selectedTemplateId }) {
               ))}
             </div>
           </div>
+
+          {sequence.length > 1 && onLoadSequence && (
+            <div className="sequence-cta">
+              <div>
+                <strong>These {sequence.length} work as one sequence</strong>
+                <span className="muted">
+                  Loads every step in order with its wait already set. Edit the wording afterwards.
+                </span>
+              </div>
+              <button type="button" onClick={() => { onLoadSequence(sequence); setExpanded(false); }}>
+                Load all {sequence.length} steps
+              </button>
+            </div>
+          )}
 
           <div className="template-grid">
             {filtered.map((template) => (

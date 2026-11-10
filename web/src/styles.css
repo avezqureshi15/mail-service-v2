@@ -775,3 +775,17 @@ button.step-tab.active:hover { background: var(--accent-dark); color: #fff; }
 /* Netlify injects a floating badge on free projects. Hidden rather than
    left to overlap the campaign editor's controls in the bottom corner. */
 .nl-wrap { display: none !important; }
+
+/* "These five work as one sequence" prompt above the template grid. Styled
+   as a quiet suggestion rather than a banner - it is the right path for most
+   people, but picking a single template is still legitimate. */
+.sequence-cta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 18px; flex-wrap: wrap;
+  padding: 14px 16px; margin-bottom: 16px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2, #f7f9fb);
+}
+.sequence-cta strong { display: block; font-size: 13.5px; }
+.sequence-cta .muted { display: block; font-size: 12.5px; margin-top: 2px; }
+.sequence-cta button { white-space: nowrap; }

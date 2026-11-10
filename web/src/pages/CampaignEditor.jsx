@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import TemplateSelector from '../components/TemplateSelector.jsx';
@@ -37,6 +37,10 @@ export default function CampaignEditor() {
   const [steps, setSteps] = useState([{ ...BLANK_STEP, waitDays: 0 }]);
   const [lint, setLint] = useState(null);
   const [activeStep, setActiveStep] = useState(0);
+  // Read inside the template effect without making it a dependency - as a
+  // dependency it would re-apply the template every time the rep switched
+  // step, overwriting their edits.
+  const activeStepRef = useRef(0);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState(null);
@@ -121,9 +125,13 @@ export default function CampaignEditor() {
     return () => clearTimeout(timer);
   }, [steps, activeStep]);
 
-  // Selecting a template should dress every step, not just the one currently
-  // open. Steps that already have a body are left alone so per-step wording
-  // edits survive, but empty steps pick up the same template design.
+  // A chosen template fills the step currently open, and only that one.
+  //
+  // This used to fill every empty step with the same design, which suited a
+  // set of templates that differed by look. The sequence templates differ by
+  // *copy* - a reminder is not an opener - so one template across five steps
+  // would send the same message five times with Re: in front of it. Use
+  // "Load all steps" in the picker to set up a whole sequence at once.
   useEffect(() => {
     if (!selectedTemplate) return undefined;
     let cancelled = false;
@@ -131,10 +139,10 @@ export default function CampaignEditor() {
       try {
         const data = await api.get(`/templates/${selectedTemplate}`);
         if (cancelled) return;
-        setSteps((current) => current.map((s) => (
-          s.htmlBody && s.htmlBody.trim()
-            ? s
-            : { ...s, htmlBody: data.template.content }
+        setSteps((current) => current.map((s, i) => (
+          i === activeStepRef.current
+            ? { ...s, htmlBody: data.template.content, subject: s.subject || (data.template.defaultSubject ?? '') }
+            : s
         )));
       } catch {
         // The active step's editor surfaces any load error.
@@ -142,6 +150,25 @@ export default function CampaignEditor() {
     })();
     return () => { cancelled = true; };
   }, [selectedTemplate]);
+
+  /**
+   * Replaces the whole campaign with a ready-made sequence.
+   *
+   * The order, the waits and the first subject come from the templates
+   * themselves, so this cannot drift from what the templates intend. Only
+   * offered when nothing has been written yet, since it discards content.
+   */
+  const loadSequence = useCallback((ordered) => {
+    setSteps(ordered.map((t, i) => ({
+      subject: i === 0 ? (t.defaultSubject ?? '') : '',
+      htmlBody: t.content ?? '',
+      waitDays: t.sequence?.waitDays ?? 0,
+    })));
+    setActiveStep(0);
+    setSelectedTemplate(ordered[0]?.id ?? null);
+  }, []);
+
+  useEffect(() => { activeStepRef.current = activeStep; }, [activeStep]);
 
   const updateStep = useCallback((index, patch) => {
     setSteps((current) => current.map((step, i) => (i === index ? { ...step, ...patch } : step)));
@@ -155,12 +182,10 @@ export default function CampaignEditor() {
   );
 
   function addStep() {
-    // Follow-up steps inherit the current template body so every step shares
-    // the same design, then the rep can adjust the wording per step.
-    setSteps((current) => [
-      ...current,
-      { ...BLANK_STEP, htmlBody: current[0]?.htmlBody ?? '' },
-    ]);
+    // Deliberately empty. Cloning step 1 used to keep the design consistent,
+    // but it also meant a newly added step was never empty - so picking a
+    // template for it silently did nothing.
+    setSteps((current) => [...current, { ...BLANK_STEP }]);
     setActiveStep(steps.length);
   }
 
@@ -525,6 +550,7 @@ export default function CampaignEditor() {
         <div className="grid cols-2">
           <div>
             <TemplateSelector
+              onLoadSequence={loadSequence}
               onSelect={setSelectedTemplate}
               selectedTemplateId={selectedTemplate}
             />
