@@ -29,7 +29,7 @@ const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const app = express();
 
 // Behind a reverse proxy in production, so req.ip and secure cookies work.
-app.set('trust proxy', env.isProduction ? 1 : false);
+app.set('trust proxy', env.isProduction ? env.TRUST_PROXY_HOPS : false);
 app.disable('x-powered-by');
 
 app.use(helmet({

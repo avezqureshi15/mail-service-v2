@@ -54,6 +54,14 @@ gate runs before anything is learned.
   mailbox follows no personal format, so there is nothing to learn from it.
   `ROLE_PREFIXES` in `server/src/lib/email-validation.js` already lists these
 - the domain is disposable — same list, same file
+- **the domain is a consumer mailbox provider** — `gmail.com`, `outlook.com`,
+  `yahoo.com`, `rediffmail.com` and the rest. A personal address has no company
+  format; the local part is whatever the person picked at signup. This is a
+  correctness requirement, not hygiene: without it the learner groups every
+  Gmail prospect into one "company", concludes `gmail.com` uses `first.last`,
+  and confidently predicts `john.smith@gmail.com` for all of them. Found by
+  running the backtest against real data — see
+  `server/scripts/backtest-patterns.js`, which carries the provider list
 - **our own `bounces` table has a hard bounce for it.** The operator believes it
   works; a receiving mail server is on record saying otherwise. Show them the
   bounce date rather than a bare rejection

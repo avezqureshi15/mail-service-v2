@@ -32,6 +32,17 @@ const schema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: port(4000),
     APP_BASE_URL: required('APP_BASE_URL').url(),
+    // How many reverse proxies sit in front of this process.
+    //
+    // Express counts hops from the right of X-Forwarded-For to decide which
+    // entry is the real client. Set it too low and req.ip becomes the nearest
+    // proxy's address: every unsubscribe records the wrong IP - which is the
+    // evidence of who opted out - and the per-IP rate limits collapse into
+    // one global bucket, so a busy campaign can throttle genuine unsubscribes.
+    // Set it too high and a forged header lets a direct caller spoof an IP.
+    //
+    // Netlify -> Caddy -> here is 2. A single proxy is 1.
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(1),
     WEB_ORIGIN: required('WEB_ORIGIN').url(),
 
     TOKEN_HMAC_SECRET: secret('TOKEN_HMAC_SECRET'),
