@@ -9,8 +9,14 @@
  * password is never printed, logged or echoed - only facts about it, such as
  * its length and whether it contains spaces.
  */
-import { env } from '../src/config/env.js';
-import { verifyTransport, closeTransport } from '../src/mail/transport.js';
+import { parseArgs } from 'node:util';
+import { verifyTransport, closeAllTransports } from '../src/mail/transport.js';
+import {
+  loadMailboxes, allMailboxes, defaultMailbox, mailboxSecrets,
+} from '../src/db/repositories/mailboxes.js';
+import { closePool } from '../src/db/index.js';
+
+const { values: args } = parseArgs({ options: { mailbox: { type: 'string' } }, strict: false });
 
 const green = (s) => `\x1b[32m${s}\x1b[0m`;
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
@@ -18,15 +24,32 @@ const yellow = (s) => `\x1b[33m${s}\x1b[0m`;
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
 
-const pw = env.SMTP_PASSWORD ?? '';
+await loadMailboxes();
+
+const mailbox = args.mailbox
+  ? allMailboxes().find((m) => String(m.id) === args.mailbox
+      || m.label.toLowerCase() === args.mailbox.toLowerCase()
+      || m.from_email.toLowerCase() === args.mailbox.toLowerCase())
+  : defaultMailbox();
+
+if (!mailbox) {
+  console.log(red(args.mailbox ? `No mailbox matching "${args.mailbox}".` : 'No mailbox configured.'));
+  for (const m of allMailboxes()) console.log(`  ${m.id}: ${m.label} <${m.from_email}>`);
+  await closePool();
+  process.exit(1);
+}
+
+// Decrypted here and nowhere else, and only facts about it are printed.
+const { smtpPassword: pw } = await mailboxSecrets(mailbox.id);
 const problems = [];
 
 console.log(`\n${bold('SMTP credential diagnosis')}\n`);
 
-console.log(`  Provider   : ${env.provider.label}`);
-console.log(`  Host       : ${env.SMTP_HOST}:${env.SMTP_PORT}`);
-console.log(`  Username   : ${env.SMTP_USER}`);
-console.log(`  From       : ${env.MAIL_FROM_ADDRESS}`);
+console.log(`  Mailbox    : ${mailbox.label}`);
+console.log(`  Provider   : ${mailbox.preset.label}`);
+console.log(`  Host       : ${mailbox.smtp_host}:${mailbox.smtp_port}`);
+console.log(`  Username   : ${mailbox.smtp_user}`);
+console.log(`  From       : ${mailbox.from_email}`);
 console.log(`  Password   : ${pw.length} characters ${dim('(value never shown)')}\n`);
 
 // --- Shape checks, before spending a round trip -----------------------------
@@ -57,7 +80,7 @@ if (/^["']|["']$/.test(pw)) {
 }
 
 const stripped = pw.replace(/\s/g, '');
-if (env.provider.id === 'google' && pw && !/CHANGE[_-]?ME/i.test(pw) && stripped.length !== 16) {
+if (mailbox.preset.id === 'google' && pw && !/CHANGE[_-]?ME/i.test(pw) && stripped.length !== 16) {
   problems.push({
     fatal: false,
     title: `Google app passwords are 16 characters; this one is ${stripped.length}`,
@@ -68,11 +91,11 @@ if (env.provider.id === 'google' && pw && !/CHANGE[_-]?ME/i.test(pw) && stripped
   });
 }
 
-if (env.SMTP_USER.toLowerCase() !== env.MAIL_FROM_ADDRESS.toLowerCase()) {
+if (mailbox.smtp_user.toLowerCase() !== mailbox.from_email.toLowerCase()) {
   problems.push({
     fatal: false,
     title: 'The username and From address are different mailboxes',
-    fix: `Gmail rewrites From unless ${env.MAIL_FROM_ADDRESS} is a verified "Send mail as" alias of ${env.SMTP_USER}.`,
+    fix: `${mailbox.preset.label} may rewrite From unless ${mailbox.from_email} is a verified "Send mail as" alias of ${mailbox.smtp_user}.`,
   });
 }
 
@@ -91,11 +114,12 @@ if (problems.some((p) => p.fatal)) {
 console.log(dim('Attempting a real login...\n'));
 
 try {
-  await verifyTransport();
+  await verifyTransport(mailbox);
   console.log(green('PASS  The credentials are accepted.\n'));
   console.log('Send a real test message with:');
-  console.log(dim(`  node scripts/smtp-test.js --to ${env.SMTP_USER}\n`));
-  await closeTransport();
+  console.log(dim(`  node scripts/smtp-test.js --mailbox ${mailbox.id} --to ${mailbox.smtp_user}\n`));
+  await closeAllTransports();
+  await closePool();
   process.exit(0);
 } catch (error) {
   const message = error.message ?? String(error);
@@ -103,8 +127,8 @@ try {
 
   if (/535|BadCredentials|Username and Password not accepted/i.test(message)) {
     console.log(bold('Google rejected the username/password pair. In order of likelihood:\n'));
-    console.log('  1. The server has not reloaded .env.');
-    console.log(dim('     Watch mode only watches src/, so a .env edit needs a manual restart.\n'));
+    console.log('  1. The password stored for this mailbox is out of date.');
+    console.log(dim('     Re-enter it under Settings > Mailboxes; a saved change takes effect on the next send, no restart needed.'));
     console.log('  2. Spaces were kept in the app password.');
     console.log(dim('     It must be the 16 characters with no spaces.\n'));
     console.log('  3. It is the account password, not an app password.');
@@ -112,11 +136,12 @@ try {
     console.log('  4. Two-Step Verification is off for the account.');
     console.log(dim('     App passwords do not exist without it - the page will not offer one.\n'));
     console.log('  5. The app password belongs to a different account than SMTP_USER.');
-    console.log(dim(`     It must have been generated while signed in as ${env.SMTP_USER}.\n`));
+    console.log(dim(`     It must have been generated while signed in as ${mailbox.smtp_user}.\n`));
     console.log('  6. A Workspace admin has blocked SMTP sign-in for the domain.');
     console.log(dim('     Admin console > Security > Less secure apps / Connected apps.\n'));
   }
 
-  await closeTransport();
+  await closeAllTransports();
+  await closePool();
   process.exit(1);
 }

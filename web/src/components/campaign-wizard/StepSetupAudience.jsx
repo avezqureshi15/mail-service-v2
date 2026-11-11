@@ -28,9 +28,10 @@ export default function StepSetupAudience({
   addSubCategory,
   changeCategory,
   trackingAvailable,
-  configuredFromAddress,
+  mailboxes,
 }) {
   const selectedList = lists.find((list) => String(list.id) === String(form.listId));
+  const selectedMailbox = mailboxes.find((m) => String(m.id) === String(form.mailboxId));
 
   return (
     <div className="wizard-page-inner">
@@ -119,18 +120,34 @@ export default function StepSetupAudience({
             />
           </div>
           <div className="field">
-            <label htmlFor="fromEmail">Sender email</label>
-            <input
-              id="fromEmail"
-              type="email"
-              value={configuredFromAddress}
-              disabled
-            />
-            <div className="hint">
-              Locked to the mailbox configured on the server - Gmail only accepts this
-              exact address (or a verified alias) as the sender, so it can&rsquo;t be
-              set per campaign.
-            </div>
+            <label htmlFor="mailbox">Send from <span style={{ color: 'var(--bad)' }}>*</span></label>
+            <select
+              id="mailbox"
+              value={form.mailboxId}
+              onChange={(e) => setForm({ ...form, mailboxId: e.target.value })}
+            >
+              <option value="">Select a mailbox</option>
+              {mailboxes.map((mailbox) => (
+                <option key={mailbox.id} value={mailbox.id}>
+                  {mailbox.label} ({mailbox.from_email})
+                </option>
+              ))}
+            </select>
+            {mailboxes.length === 0 ? (
+              <div className="field-error">
+                No sending mailboxes yet. Add one under Settings &rsaquo; Mailboxes.
+              </div>
+            ) : (
+              <div className="hint">
+                Every message in this campaign, follow-ups included, goes out of this
+                account and is paced against its own daily limit.
+                {selectedMailbox?.fromMustMatchUser && (
+                  <> {selectedMailbox.providerLabel} sends only as{' '}
+                  {selectedMailbox.from_email}, so the sender address can&rsquo;t be
+                  overridden per campaign.</>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div className="field">

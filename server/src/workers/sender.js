@@ -1,73 +1,231 @@
-import { env } from '../config/env.js';
-import { getTransport } from '../mail/transport.js';
-import { composeMessage } from '../mail/compose.js';
-import { getSettings, currentDailyAllowance } from '../db/repositories/settings.js';
-import {
-  claimNextJob, markSent, markFailed, releaseStaleLocks, incrementSentToday,
-  sentToday, sentInLastHour, domainsOverHourlyCap, hasPendingWork,
-  recentDeliveryHealth, campaignJobStats,
-} from '../db/repositories/jobs.js';
-import {
-  getCampaign, getStep, countSteps, setCampaignStatus, getEnrollment,
-  advanceEnrollment, completeEnrollment, exitEnrollment,
-} from '../db/repositories/campaigns.js';
+import { getSettings, currentDailyAllowance as globalAllowance } from '../db/repositories/settings.js';
+import { activeMailboxes, getMailbox } from '../db/repositories/mailboxes.js';
+import { currentDailyAllowance, warmupStage } from '../lib/warmup.js';
+import { createSenderLoop } from './sender-loop.js';
 import { checkDomain } from '../lib/dns-check.js';
-import { queryOne, execute } from '../db/index.js';
+import { recordDomainHealth } from '../db/repositories/domain-health.js';
+import {
+  releaseStaleLocks, domainsOverHourlyCap, recentDeliveryHealth,
+  sentToday, sentInLastHour,
+} from '../db/repositories/jobs.js';
+import { execute } from '../db/index.js';
 
 /**
- * Drains the send queue under the pacing rules.
+ * Supervises one sending loop per active mailbox.
  *
- * Everything that protects the Zoho account and the domain reputation lives
- * here: the daily cap, the warm-up ramp, per-domain throttling, the sending
- * window, jitter between messages, and the bounce/complaint auto-pause.
- * A campaign cannot opt out of any of it - sequences go through the same
- * queue precisely so follow-ups cannot bypass the limits.
+ * The loops do the sending; this module does the two things they must not
+ * each do for themselves.
+ *
+ * It starts loops. It never stops them - a loop re-reads its own mailbox
+ * every tick and terminates itself when that mailbox is gone, deactivated or
+ * paused, so there is no window in which a supervisor tears down a loop that
+ * is mid-send.
+ *
+ * And it runs the janitor: the measurements that belong to the system rather
+ * than to any one account. Three of them, each here for its own reason. The
+ * stale-lock sweep is one global statement, so N loops issuing it every tick
+ * would be pure write amplification and would have them blocking on each
+ * other's row locks. The bounce-rate circuit breaker is a property of the
+ * domain's reputation, and `rateCheckMinimumSends` already concedes that
+ * per-mailbox readings are noise at these volumes. And the per-receiving-
+ * domain burst cap *must* be global: a receiver attributes traffic from all
+ * our mailboxes on one sending domain to one sender, so three mailboxes each
+ * measuring their own 25/hour would quietly deliver 75 and defeat the gate.
  */
 
-const TICK_IDLE_MS = 15_000;
-
-let running = false;
-let timer = null;
-let domainAuthCache = { checkedAt: 0, passing: false, detail: null };
+const JANITOR_MS = 30_000;
+const STALE_LOCK_MINUTES = 15;
+const DOMAIN_AUTH_TTL_MS = 60 * 60_000;
 
 const log = (...args) => console.log('[sender]', ...args);
 
-/**
- * Domain authentication is re-checked hourly rather than per message. If SPF
- * or DKIM is failing, nothing is sent at all - unauthenticated bulk mail goes
- * to spam no matter how carefully it is paced.
- */
-async function domainAuthOk(settings) {
-  if (!settings.requireDomainAuth) return { ok: true };
+/** mailboxId -> loop */
+const loops = new Map();
 
-  const ONE_HOUR = 3_600_000;
-  if (Date.now() - domainAuthCache.checkedAt < ONE_HOUR) {
-    return { ok: domainAuthCache.passing, detail: domainAuthCache.detail };
+let janitor = null;
+let supervising = false;
+
+// Janitor measurements, read synchronously by every loop.
+let blockedDomains = [];
+let deliveryHealth = { ok: true };
+/** `${domain}:${selector}` -> { ok, detail, checkedAt } */
+const domainAuth = new Map();
+
+const shared = {
+  blockedDomains: () => blockedDomains,
+  deliveryHealth: () => deliveryHealth,
+  domainAuth: (domain, selector) => {
+    const cached = domainAuth.get(`${domain}:${selector}`);
+    // Nothing measured yet: allow sending rather than stalling every loop on
+    // the first tick after a restart. The janitor fills this immediately.
+    if (!cached) return { ok: true, detail: null };
+    return cached;
+  },
+};
+
+/**
+ * Pauses every sending campaign. Reserved for the bounce/complaint breaker,
+ * which is a domain-wide problem - a provider quota error pauses only the one
+ * mailbox that hit it, in sender-loop.js.
+ */
+function pauseAllSending(reason) {
+  return execute(
+    `UPDATE campaigns SET status = 'paused', pause_reason = $1, updated_at = now()
+      WHERE status = 'sending'`,
+    [reason],
+  );
+}
+
+/**
+ * Re-checks SPF/DKIM/DMARC once per distinct (domain, selector) in use.
+ *
+ * The pair, not the domain: a Google mailbox publishes DKIM under selector
+ * `google` and needs include:_spf.google.com, while a Zoho mailbox on the
+ * same domain wants `zoho` and include:zoho.com. One result per domain would
+ * let whichever checked last decide whether the other could send.
+ */
+async function refreshDomainAuth(settings) {
+  if (!settings.requireDomainAuth) {
+    domainAuth.clear();
+    return;
   }
 
-  try {
-    const result = await checkDomain(env.SENDING_DOMAIN, env.DKIM_SELECTOR, { provider: env.provider });
-    domainAuthCache = {
-      checkedAt: Date.now(),
-      passing: result.passing,
-      detail: `SPF: ${result.spf.summary}; DKIM: ${result.dkim.summary}`,
-    };
-    await execute(
-      `INSERT INTO domain_health (id, spf_ok, dkim_ok, dmarc_ok, detail, checked_at)
-       VALUES (1, $1, $2, $3, $4::jsonb, now())
-       ON CONFLICT (id) DO UPDATE SET
-         spf_ok = excluded.spf_ok, dkim_ok = excluded.dkim_ok, dmarc_ok = excluded.dmarc_ok,
-         detail = excluded.detail, checked_at = excluded.checked_at`,
-      [result.spf.ok, result.dkim.ok, result.dmarc.ok, JSON.stringify(result)],
-    );
-    return { ok: result.passing, detail: domainAuthCache.detail };
-  } catch (error) {
-    // A DNS outage should not silently unblock sending.
-    return { ok: false, detail: `Domain check failed: ${error.message}` };
+  const pairs = new Map();
+  for (const mailbox of activeMailboxes()) {
+    pairs.set(`${mailbox.sending_domain}:${mailbox.dkim_selector}`, mailbox);
+  }
+
+  for (const [key, mailbox] of pairs) {
+    const cached = domainAuth.get(key);
+    if (cached && Date.now() - cached.checkedAt < DOMAIN_AUTH_TTL_MS) continue;
+
+    try {
+      const result = await checkDomain(mailbox.sending_domain, mailbox.dkim_selector, {
+        provider: mailbox.preset,
+      });
+      domainAuth.set(key, {
+        ok: result.passing,
+        detail: `SPF: ${result.spf.summary}; DKIM: ${result.dkim.summary}`,
+        checkedAt: Date.now(),
+      });
+      await recordDomainHealth(mailbox.sending_domain, mailbox.dkim_selector, result);
+    } catch (error) {
+      // A DNS outage must not silently unblock sending.
+      domainAuth.set(key, {
+        ok: false,
+        detail: `Domain check failed: ${error.message}`,
+        checkedAt: Date.now(),
+      });
+    }
   }
 }
 
-function withinSendWindow(settings, now = new Date()) {
+async function runJanitor() {
+  const settings = getSettings();
+
+  try {
+    await releaseStaleLocks(STALE_LOCK_MINUTES);
+
+    blockedDomains = await domainsOverHourlyCap(settings.perDomainHourlyCap);
+
+    const health = await recentDeliveryHealth(24);
+    if (health.sent < settings.rateCheckMinimumSends) {
+      deliveryHealth = { ok: true };
+    } else if (health.complaintRate > settings.maxComplaintRatePercent) {
+      deliveryHealth = {
+        ok: false,
+        reason: `complaint rate ${health.complaintRate}% exceeds ${settings.maxComplaintRatePercent}%`,
+      };
+    } else if (health.bounceRate > settings.maxBounceRatePercent) {
+      deliveryHealth = {
+        ok: false,
+        reason: `bounce rate ${health.bounceRate}% exceeds ${settings.maxBounceRatePercent}%`,
+      };
+    } else {
+      deliveryHealth = { ok: true };
+    }
+
+    if (!deliveryHealth.ok) {
+      const paused = await pauseAllSending(`Auto-paused: ${deliveryHealth.reason}`);
+      if (paused > 0) log(`AUTO-PAUSED ${paused} campaign(s) - ${deliveryHealth.reason}`);
+    }
+
+    await refreshDomainAuth(settings);
+  } catch (error) {
+    console.error('[sender] janitor failed', error);
+  }
+
+  reconcile();
+}
+
+/** Starts a loop for any active mailbox that does not have one running. */
+function reconcile() {
+  if (!supervising) return;
+
+  for (const mailbox of activeMailboxes()) {
+    const existing = loops.get(mailbox.id);
+    if (existing?.isRunning()) continue;
+
+    const loop = existing ?? createSenderLoop(mailbox.id, shared);
+    loops.set(mailbox.id, loop);
+    loop.start();
+    log(`loop started for "${mailbox.label}" <${mailbox.from_email}>`);
+  }
+
+  // Drop handles for loops that stopped themselves and whose mailbox is no
+  // longer active, so the map does not grow forever.
+  for (const [id, loop] of loops) {
+    if (loop.isRunning()) continue;
+    const mailbox = getMailbox(id);
+    if (!mailbox || !mailbox.is_active) loops.delete(id);
+  }
+}
+
+export function startSender() {
+  if (supervising) return;
+  supervising = true;
+
+  const count = activeMailboxes().length;
+  log(count === 0
+    ? 'supervisor started - no active mailboxes yet'
+    : `supervisor started - ${count} mailbox(es)`);
+
+  reconcile();
+  janitor = setInterval(runJanitor, JANITOR_MS);
+  janitor.unref?.();
+  // One pass immediately, so the first loops are not running for 30s with no
+  // blocked-domain list and no domain-auth result.
+  runJanitor();
+}
+
+export function stopSender() {
+  supervising = false;
+  if (janitor) clearInterval(janitor);
+  janitor = null;
+  for (const loop of loops.values()) loop.stop();
+}
+
+/**
+ * Waits for any send already on the wire, so shutdown does not exit
+ * underneath one. Bounded, because a hung socket must not block the exit.
+ */
+export async function drainSender(timeoutMs = 8000) {
+  const idle = Promise.all([...loops.values()].map((l) => l.whenIdle()));
+  let timer;
+  const expiry = new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); });
+  try {
+    await Promise.race([idle, expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Mailbox ids with a live loop. Exported for tests and the status endpoints. */
+export function runningLoops() {
+  return [...loops.values()].filter((l) => l.isRunning()).map((l) => l.mailboxId);
+}
+
+function sendWindowState(settings, now = new Date()) {
   const day = now.getDay();
   if (!settings.sendOnWeekends && (day === 0 || day === 6)) {
     return { ok: false, reason: 'outside sending days (weekend)' };
@@ -83,256 +241,93 @@ function withinSendWindow(settings, now = new Date()) {
 }
 
 /**
- * Pauses every sending campaign when bounce or complaint rates spike. This is
- * the mechanism that stops one bad list burning the domain for everything
- * that comes after it.
+ * Why one mailbox is or is not sending. Consumed by the campaign page, which
+ * would otherwise show work queued and nothing happening, with no way to tell
+ * that the send window simply closed for the evening.
+ *
+ * Called with no mailbox it reports the system-wide view instead, which is
+ * what the dashboard wants.
  */
-async function checkDeliveryHealth(settings) {
-  const health = await recentDeliveryHealth(24);
-  if (health.sent < settings.rateCheckMinimumSends) return { ok: true, health };
-
-  if (health.complaintRate > settings.maxComplaintRatePercent) {
-    return { ok: false, health, reason: `complaint rate ${health.complaintRate}% exceeds ${settings.maxComplaintRatePercent}%` };
-  }
-  if (health.bounceRate > settings.maxBounceRatePercent) {
-    return { ok: false, health, reason: `bounce rate ${health.bounceRate}% exceeds ${settings.maxBounceRatePercent}%` };
-  }
-  return { ok: true, health };
-}
-
-/**
- * One statement rather than a select and a loop: when the auto-pause fires,
- * every sending campaign has to stop at the same instant. Pausing them one
- * round trip at a time would leave the later ones still claiming jobs while
- * the earlier ones are already stopped.
- */
-function pauseAllSending(reason) {
-  return execute(
-    `UPDATE campaigns SET status = 'paused', pause_reason = $1, updated_at = now()
-      WHERE status = 'sending'`,
-    [reason],
-  );
-}
-
-/** Base interval plus jitter, so the send pattern is not metronomic. */
-function nextDelayMs(settings) {
-  const base = settings.minIntervalSeconds * 1000;
-  const spread = base * (settings.jitterPercent / 100);
-  return Math.max(1000, Math.round(base - spread / 2 + Math.random() * spread));
-}
-
-/**
- * Marks a campaign complete once nothing is left to do. For a sequence that
- * means no queued jobs AND no enrollments still waiting on a later step.
- */
-async function finaliseCampaignIfDone(campaignId) {
-  const stats = await campaignJobStats(campaignId);
-  if (stats.queued > 0 || stats.sending > 0) return;
-
-  const pending = await queryOne(
-    "SELECT COUNT(*) AS n FROM sequence_enrollments WHERE campaign_id = $1 AND status = 'active'",
-    [campaignId],
-  );
-  if (pending.n > 0) return;
-
-  await setCampaignStatus(campaignId, 'completed');
-  log(`campaign ${campaignId} completed (${stats.sent} sent, ${stats.failed} failed, ${stats.skipped} skipped)`);
-}
-
-/**
- * After a successful send, schedule the contact's next sequence step - or
- * finish their enrollment if that was the last one.
- */
-async function scheduleNextStep({ campaignId, contactId, stepNo, messageId }) {
-  const enrollment = await getEnrollment(campaignId, contactId);
-  if (!enrollment || enrollment.status !== 'active') return;
-
-  const total = await countSteps(campaignId);
-  if (stepNo >= total) {
-    await completeEnrollment(campaignId, contactId);
-    return;
-  }
-
-  const next = await getStep(campaignId, stepNo + 1);
-  await advanceEnrollment({
-    campaignId,
-    contactId,
-    stepNo,
-    waitDays: next?.wait_days ?? 3,
-    // Step 1's Message-ID becomes the thread anchor for every follow-up.
-    threadMessageId: stepNo === 1 ? messageId : enrollment.thread_message_id,
-  });
-}
-
-async function sendOne(job) {
-  const campaign = await getCampaign(job.campaign_id, job.tenant_id);
-  if (!campaign) {
-    await markFailed(job.id, 'Campaign no longer exists', { maxAttempts: 1 });
-    return false;
-  }
-
-  const step = await getStep(job.campaign_id, job.step_no);
-  if (!step) {
-    await markFailed(job.id, `Step ${job.step_no} is not defined`, { maxAttempts: 1 });
-    return false;
-  }
-
-  const enrollment = await getEnrollment(job.campaign_id, job.contact_id);
-
-  const { message, messageId } = composeMessage({
-    campaign,
-    step,
-    contact: {
-      id: job.contact_id,
-      email: job.email,
-      first_name: job.first_name,
-      last_name: job.last_name,
-      company: job.company,
-      custom_fields: job.custom_fields,
-    },
-    threadMessageId: job.step_no > 1 ? enrollment?.thread_message_id ?? null : null,
-  });
-
-  try {
-    await (await getTransport()).sendMail(message);
-  } catch (error) {
-    const settings = getSettings();
-    const result = await markFailed(job.id, error.message, { maxAttempts: settings.maxSendAttempts });
-
-    // Zoho's limit is dynamic. If it answers with a quota error, stop for the
-    // day rather than hammering it into a suspension.
-    if (/limit|quota|exceeded|too many|554|552|421/i.test(error.message)) {
-      const paused = await pauseAllSending(`Provider rejected send: ${error.message.slice(0, 200)}`);
-      log(`provider limit hit - paused ${paused} campaign(s): ${error.message}`);
-    }
-
-    // Once we have given up on a step, the contact's enrollment must be
-    // closed too - otherwise it sits 'active' with nothing scheduled and the
-    // campaign can never reach 'completed'.
-    if (!result.retrying && campaign.is_sequence) {
-      await exitEnrollment({ campaignId: job.campaign_id, contactId: job.contact_id, reason: 'stopped' });
-    }
-
-    log(`send failed for ${job.email}${result.retrying ? ` (retry ${result.attempts} in ${result.delayMinutes}m)` : ' (gave up)'}: ${error.message}`);
-    return false;
-  }
-
-  await markSent(job.id, messageId);
-  await incrementSentToday();
-
-  if (campaign.is_sequence) {
-    await scheduleNextStep({
-      campaignId: job.campaign_id,
-      contactId: job.contact_id,
-      stepNo: job.step_no,
-      messageId,
-    });
-  }
-
-  log(`sent step ${job.step_no} to ${job.email}`);
-  return true;
-}
-
-/**
- * One pass: decide whether sending is allowed right now, and if so send a
- * single message. Returns the delay before the next pass.
- */
-async function tick() {
+export async function senderStatus(mailboxId = null) {
   const settings = getSettings();
+  const mailbox = mailboxId ? getMailbox(mailboxId) : null;
+  const window = sendWindowState(settings);
 
-  await releaseStaleLocks(15);
+  if (!mailbox) {
+    const [today, lastHour] = await Promise.all([sentToday(), sentInLastHour()]);
 
-  // The cheapest question first: with nothing queued, the tick costs one
-  // query rather than the half-dozen the checks below would run.
-  if (!await hasPendingWork()) return TICK_IDLE_MS;
+    // The dashboard banner asks one question - is anything blocked? - so the
+    // system view reports the worst answer across every (domain, selector)
+    // pair in use, and names the pairs that are failing.
+    const failing = [...domainAuth.entries()].filter(([, v]) => !v.ok);
+    const measured = domainAuth.size > 0;
 
-  const window = withinSendWindow(settings);
-  if (!window.ok) return TICK_IDLE_MS * 4;
+    // The daily figure across every sender, since there is no longer a
+    // single mailbox whose allowance would be the answer.
+    const totalAllowance = activeMailboxes()
+      .reduce((sum, m) => sum + currentDailyAllowance(m.pacing), 0);
 
-  const allowance = currentDailyAllowance(settings);
-  if (await sentToday() >= allowance) return TICK_IDLE_MS * 4;
-
-  if (await sentInLastHour() >= settings.hourlyCap) return TICK_IDLE_MS * 2;
-
-  const health = await checkDeliveryHealth(settings);
-  if (!health.ok) {
-    const paused = await pauseAllSending(`Auto-paused: ${health.reason}`);
-    log(`AUTO-PAUSED ${paused} campaign(s) - ${health.reason}`);
-    return TICK_IDLE_MS * 4;
+    return {
+      running: supervising,
+      mailboxes: runningLoops().length,
+      withinSendWindow: window.ok,
+      windowReason: window.reason ?? null,
+      sentToday: today,
+      sentLastHour: lastHour,
+      dailyAllowance: totalAllowance || globalAllowance(settings),
+      remainingToday: Math.max(0, (totalAllowance || globalAllowance(settings)) - today),
+      hourlyCap: settings.hourlyCap,
+      throttledDomains: blockedDomains,
+      deliveryHealth,
+      domainAuth: {
+        enforced: settings.requireDomainAuth,
+        // null until the janitor has measured anything, so the UI can tell
+        // "not checked yet" from "checked and failing".
+        passing: measured ? failing.length === 0 : null,
+        detail: failing.length > 0
+          ? failing.map(([key, v]) => `${key}: ${v.detail}`).join(' | ')
+          : null,
+      },
+    };
   }
 
-  const auth = await domainAuthOk(settings);
-  if (!auth.ok) {
-    const paused = await pauseAllSending(`Domain authentication failing - ${auth.detail}`);
-    if (paused > 0) log(`AUTO-PAUSED ${paused} campaign(s) - ${auth.detail}`);
-    return TICK_IDLE_MS * 4;
-  }
+  const loop = loops.get(mailbox.id);
+  const { pacing } = mailbox;
+  const allowance = currentDailyAllowance(pacing);
 
-  const blocked = await domainsOverHourlyCap(settings.perDomainHourlyCap);
-  const job = await claimNextJob(blocked);
-
-  if (!job) return TICK_IDLE_MS;
-  // A suppressed or inactive contact was skipped inside the claim; come
-  // straight back for the next one rather than waiting out the interval.
-  if (job.skipped) return 50;
-
-  await sendOne(job);
-  await finaliseCampaignIfDone(job.campaign_id);
-
-  return nextDelayMs(settings);
-}
-
-async function loop() {
-  if (!running) return;
-  let delay = TICK_IDLE_MS;
-  try {
-    delay = await tick();
-  } catch (error) {
-    console.error('[sender] tick failed', error);
-    delay = TICK_IDLE_MS;
-  }
-  if (running) timer = setTimeout(loop, delay);
-}
-
-export function startSender() {
-  if (running) return;
-  running = true;
-  log('worker started');
-  timer = setTimeout(loop, 1000);
-}
-
-export function stopSender() {
-  running = false;
-  if (timer) clearTimeout(timer);
-  timer = null;
-}
-
-// Exported for the dashboard, so the UI can explain why nothing is sending.
-export async function senderStatus() {
-  const settings = getSettings();
-  const window = withinSendWindow(settings);
-  const allowance = currentDailyAllowance(settings);
-
-  const [today, lastHour, throttledDomains] = await Promise.all([
-    sentToday(),
-    sentInLastHour(),
-    domainsOverHourlyCap(settings.perDomainHourlyCap),
+  const [today, lastHour] = await Promise.all([
+    sentToday(mailbox.id),
+    sentInLastHour(mailbox.id),
   ]);
 
+  const auth = shared.domainAuth(mailbox.sending_domain, mailbox.dkim_selector);
+
   return {
-    running,
+    mailboxId: mailbox.id,
+    mailboxLabel: mailbox.label,
+    fromEmail: mailbox.from_email,
+    running: Boolean(loop?.isRunning()),
+    pausedUntil: mailbox.paused_until ?? null,
+    pauseReason: mailbox.pause_reason ?? null,
     withinSendWindow: window.ok,
     windowReason: window.reason ?? null,
+    reason: loop?.reason() ?? null,
     sentToday: today,
     dailyAllowance: allowance,
     remainingToday: Math.max(0, allowance - today),
     sentLastHour: lastHour,
-    hourlyCap: settings.hourlyCap,
-    throttledDomains,
+    hourlyCap: pacing.hourlyCap,
+    warmup: warmupStage(pacing),
+    throttledDomains: blockedDomains,
     domainAuth: {
       enforced: settings.requireDomainAuth,
-      passing: domainAuthCache.checkedAt > 0 ? domainAuthCache.passing : null,
-      detail: domainAuthCache.detail,
+      passing: auth.ok,
+      detail: auth.detail,
     },
   };
+}
+
+/** One entry per active mailbox, for the dashboard. */
+export function allSenderStatus() {
+  return Promise.all(activeMailboxes().map((mailbox) => senderStatus(mailbox.id)));
 }

@@ -9,7 +9,7 @@ export default function StepReviewSend({
   form,
   firstStep,
   selectedList,
-  configuredFromAddress,
+  selectedMailbox,
   checklist,
   readyToLaunch,
   busy,
@@ -36,8 +36,16 @@ export default function StepReviewSend({
             <div className="value">{selectedList ? `${selectedList.name} (${selectedList.contact_count})` : 'Not selected'}</div>
           </div>
           <div className="item">
+            <div className="label">Sends from</div>
+            <div className="value">
+              {selectedMailbox ? `${selectedMailbox.label} (${selectedMailbox.from_email})` : 'No mailbox selected'}
+            </div>
+          </div>
+          <div className="item">
             <div className="label">Sender</div>
-            <div className="value">{form.fromName || configuredFromAddress || 'Service default'}</div>
+            <div className="value">
+              {form.fromName || selectedMailbox?.from_name || selectedMailbox?.from_email || 'Not set'}
+            </div>
           </div>
         </div>
       </div>

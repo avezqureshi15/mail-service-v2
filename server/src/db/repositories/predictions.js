@@ -192,6 +192,12 @@ export async function predictionsAwaitingConfirmation({
          ON c.tenant_id = p.tenant_id AND lower(c.email) = lower(p.predicted_email)
        JOIN send_jobs j
          ON j.contact_id = c.id AND j.status = 'sent' AND j.sent_at IS NOT NULL
+       -- Only mailboxes that actually watch for bounces. Silence from a
+       -- mailbox with IMAP off proves nothing: the bounce may well have
+       -- arrived and simply never been read, and calling that address
+       -- confirmed would teach the predictor a wrong format as right.
+       JOIN mailboxes mb
+         ON mb.id = j.mailbox_id AND mb.imap_enabled
       WHERE p.tenant_id = $1
         AND j.sent_at < now() - make_interval(hours => $2)
         AND NOT EXISTS (

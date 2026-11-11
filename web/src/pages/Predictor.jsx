@@ -138,6 +138,7 @@ function SingleCompany({ onSaved }) {
           label="Company website"
           value={domain}
           onChange={(e) => setDomain(e.target.value)}
+          placeholder="apex.com"
           hint="Paste the website straight from your sheet - a full URL is fine."
         />
 
@@ -167,6 +168,7 @@ function SingleCompany({ onSaved }) {
               label="One working address there"
               value={seedEmail}
               onChange={(e) => setSeedEmail(e.target.value)}
+              placeholder="priya.nair@apex.com"
               hint="Not info@ or sales@ - a shared mailbox follows no personal format."
             />
             <FloatingField
@@ -174,6 +176,7 @@ function SingleCompany({ onSaved }) {
               label="Whose address is it?"
               value={seedOwnerName}
               onChange={(e) => setSeedOwnerName(e.target.value)}
+              placeholder="Priya Nair"
               hint="Their real name. Do not read it off the address - we would just learn back your guess."
             />
           </div>
@@ -611,7 +614,7 @@ function Results({ outcome, onSaved }) {
               {listChoice === '__new' && (
                 <input
                   value={newListName}
-                  placeholder="New list name"
+                  placeholder="e.g. Q1 Outreach - Apex"
                   autoFocus
                   onChange={(e) => setNewListName(e.target.value)}
                 />

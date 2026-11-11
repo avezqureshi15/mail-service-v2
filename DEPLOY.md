@@ -81,22 +81,37 @@ already exists in Supabase; those are local bootstrap values.
 | `WEB_ORIGIN` | the Netlify URL (same) |
 | `TOKEN_HMAC_SECRET` | from `server/.env` — rotating it kills every live unsubscribe link |
 | `SESSION_SECRET` | from `server/.env` — rotating it signs everyone out |
+| `SECRETS_KEY` | from `server/.env` — **back this up with the database.** It encrypts every stored mailbox password; lose it or change it and all of them have to be re-entered |
 | `DATABASE_URL` | the Supabase **session pooler** string, port 5432 |
 | `SENDING_DOMAIN` | `webknot.in` |
 | `MAIL_FROM_NAME` | from `server/.env` |
 | `MAIL_FROM_ADDRESS` | from `server/.env` |
 | `COMPANY_POSTAL_ADDRESS` | from `server/.env` — legally required in every commercial email |
-| `SMTP_HOST` | `smtp.gmail.com` |
-| `SMTP_USER` | from `server/.env` |
-| `SMTP_PASSWORD` | the Gmail app password |
+| `SMTP_HOST` | `smtp.gmail.com` — only used to seed the first mailbox |
+| `SMTP_USER` | from `server/.env` — same |
+| `SMTP_PASSWORD` | the Gmail app password — same |
 
-**Two defaults will silently break things if you omit them.** Both default to
-Zoho, because that is what this service was originally built against:
+### Mailboxes are configured in the app, not here
 
-| Variable | Must be | Default if omitted | What goes wrong |
-|---|---|---|---|
-| `DKIM_SELECTOR` | `google` | `zoho` | The domain-auth check looks up the wrong DKIM record, fails, and the sender **auto-pauses every campaign**. Sending stops with a confusing reason. |
-| `IMAP_HOST` | `imap.gmail.com` | `imap.zoho.com` | The poller cannot connect. No bounce handling, no reply detection — the two things that protect your sending reputation. |
+SMTP and IMAP credentials live in the `mailboxes` table and are managed under
+**Settings › Mailboxes**. Each mailbox carries its own provider, hosts, app
+password, DKIM selector, daily cap and warm-up ramp, and a campaign picks one
+when it is created.
+
+The `SMTP_*`, `IMAP_*` and `DKIM_SELECTOR` variables are a **seed source only**.
+On first boot against a database with no mailboxes, the service creates one from
+them and attributes existing campaigns, jobs, counters and the IMAP read position
+to it — so an upgrade keeps sending without interruption. After that they are
+ignored; editing them changes nothing.
+
+Passwords are encrypted with AES-256-GCM under `SECRETS_KEY` before they are
+stored, and the API never returns one. A blank password field in the UI means
+"leave the stored one alone".
+
+**Adding a second mailbox:** Settings › Mailboxes › Add a mailbox. Pick the
+provider and the hosts, ports and DKIM selector fill themselves in. Use
+**Test connection** before sending anything — it checks SMTP login, IMAP login
+and the SPF/DKIM/DMARC records for that mailbox's own domain and selector.
 
 **Also set:**
 

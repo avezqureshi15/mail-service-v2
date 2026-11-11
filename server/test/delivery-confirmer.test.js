@@ -4,7 +4,7 @@ import './helpers/test-db.js';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { setupTestSchema, teardownTestSchema } from './helpers/test-db.js';
+import { setupTestSchema, teardownTestSchema, makeTestMailbox } from './helpers/test-db.js';
 import { query, queryOne, execute } from '../src/db/index.js';
 import { upsertContact } from '../src/db/repositories/contacts.js';
 import { createCampaign } from '../src/db/repositories/campaigns.js';
@@ -14,7 +14,14 @@ import {
 } from '../src/db/repositories/predictions.js';
 import { confirmQuietDeliveries } from '../src/workers/delivery-confirmer.js';
 
-before(setupTestSchema);
+let watchedMailbox;
+
+before(async () => {
+  await setupTestSchema();
+  // Confirmation is only valid for a mailbox that actually watches its
+  // inbox - silence from one with IMAP off proves nothing.
+  watchedMailbox = await makeTestMailbox({ imapEnabled: true, isDefault: true });
+});
 after(teardownTestSchema);
 
 /**
@@ -33,6 +40,7 @@ async function scenario({
   pattern = 'first.last',
   sentHoursAgo = 72,
   sent = true,
+  mailboxId = null,
 } = {}) {
   seq += 1;
   const email = `person${seq}@${domain}`;
@@ -44,9 +52,9 @@ async function scenario({
 
   if (sent) {
     await execute(
-      `INSERT INTO send_jobs (campaign_id, contact_id, step_no, status, message_id, sent_at)
-       VALUES ($1, $2, 1, 'sent', $3, now() - make_interval(hours => $4))`,
-      [campaign.id, contact.id, `<msg-${seq}@test>`, sentHoursAgo],
+      `INSERT INTO send_jobs (campaign_id, contact_id, step_no, status, message_id, sent_at, mailbox_id)
+       VALUES ($1, $2, 1, 'sent', $3, now() - make_interval(hours => $4), $5)`,
+      [campaign.id, contact.id, `<msg-${seq}@test>`, sentHoursAgo, mailboxId ?? watchedMailbox.id],
     );
   }
 
@@ -72,6 +80,27 @@ const eventsFor = (id) =>
   query('SELECT * FROM prediction_events WHERE prediction_id = $1', [id]);
 
 // ------------------------------------------------------------- confirms
+
+test('silence from a mailbox with IMAP off is never read as delivery', async () => {
+  // The whole mechanism rests on bounces being detected: a quiet send only
+  // means something if someone was listening. A mailbox with IMAP off hears
+  // nothing, so its silence is absence of evidence, and confirming on it
+  // would teach the predictor a wrong format as right.
+  const blind = await makeTestMailbox({ imapEnabled: false });
+  const s = await scenario({ mailboxId: blind.id });
+
+  const { confirmed } = await confirmQuietDeliveries({ afterHours: 48 });
+
+  const events = await eventsFor(s.prediction.id);
+  assert.equal(events.length, 0, 'a blind mailbox must produce no evidence');
+
+  const after = await queryOne(
+    'SELECT outcome FROM email_predictions WHERE id = $1', [s.prediction.id],
+  );
+  assert.notEqual(after.outcome, 'accepted', 'unconfirmable send was confirmed anyway');
+  assert.ok(confirmed >= 0);
+});
+
 
 test('a quiet send past the window is confirmed as delivered', async () => {
   const s = await scenario();

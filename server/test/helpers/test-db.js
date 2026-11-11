@@ -95,3 +95,55 @@ export async function teardownTestSchema() {
     await closePool();
   }
 }
+
+/**
+ * A sending mailbox for tests that queue or send.
+ *
+ * Every send job carries a mailbox_id, and the sequencer skips an enrollment
+ * whose campaign has none - so any test that exercises the queue needs one of
+ * these. The password is sealed with the real secret-box so the column is
+ * populated the same way production rows are.
+ */
+export async function makeTestMailbox(overrides = {}) {
+  const { queryOne } = await import('../../src/db/index.js');
+  const { seal } = await import('../../src/lib/secret-box.js');
+  const { loadMailboxes } = await import('../../src/db/repositories/mailboxes.js');
+
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const fromEmail = overrides.fromEmail ?? `sender-${suffix}@test.invalid`;
+  const imapEnabled = overrides.imapEnabled ?? false;
+
+  // The table refuses imap_enabled without somewhere to connect, so a
+  // fixture that asks for IMAP has to carry credentials too.
+  const row = await queryOne(
+    `INSERT INTO mailboxes (
+       label, provider, from_name, from_email, sending_domain, dkim_selector,
+       smtp_host, smtp_port, smtp_user, smtp_password_cipher,
+       imap_enabled, imap_host, imap_user, imap_password_cipher,
+       is_active, is_default
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE, $15)
+     RETURNING *`,
+    [
+      overrides.label ?? `test-mailbox-${suffix}`,
+      overrides.provider ?? 'other',
+      overrides.fromName ?? 'Test Sender',
+      fromEmail,
+      overrides.sendingDomain ?? 'test.invalid',
+      overrides.dkimSelector ?? 'default',
+      overrides.smtpHost ?? 'smtp.test.invalid',
+      overrides.smtpPort ?? 465,
+      overrides.smtpUser ?? fromEmail,
+      seal('test-password'),
+      imapEnabled,
+      imapEnabled ? (overrides.imapHost ?? 'imap.test.invalid') : '',
+      imapEnabled ? (overrides.imapUser ?? fromEmail) : '',
+      imapEnabled ? seal('test-imap-password') : null,
+      overrides.isDefault ?? false,
+    ],
+  );
+
+  // The synchronous getters read a cache, so it has to be refreshed before
+  // anything under test looks the new mailbox up.
+  await loadMailboxes();
+  return row;
+}

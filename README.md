@@ -44,12 +44,41 @@ The transport sits behind one module
 ([transport.js](server/src/mail/transport.js)), so moving to a dedicated bulk
 provider later is a config change rather than a rewrite.
 
+### Mailboxes
+
+Sending accounts live in the database, not in `.env`, and are managed under
+**Settings › Mailboxes**. You can add several — a mix of Zoho and Google is the
+expected case — and each campaign picks one when it is created. Picking the
+provider fills in the hosts, ports and DKIM selector from a preset, so a mailbox
+is an address and an app password.
+
+Each mailbox paces itself: its own daily and hourly caps, its own warm-up ramp
+and its own send counters, defaulted from its provider (Zoho ~300/day, Google
+~1,200). One hitting its ceiling, or being parked by a provider quota error,
+does not stop the others.
+
+Three things stay global on purpose. The sending window and weekend rule are one
+schedule for the whole service. The bounce/complaint circuit breaker is a
+property of the domain's reputation rather than of any one account. And the
+per-receiving-domain burst cap has to be measured across every mailbox, because
+Gmail attributes traffic from all of them on one sending domain to a single
+sender — three mailboxes each measuring their own allowance would quietly
+deliver three times the intended burst.
+
+Passwords are encrypted at rest with AES-256-GCM under `SECRETS_KEY`, and the
+API never returns one. **Back that key up with the database**: lose it and every
+stored mailbox password has to be re-entered.
+
+The `SMTP_*` and `IMAP_*` variables in `.env` are only a seed for the first
+mailbox on an existing install. After that they are ignored.
+
 ### Gmail rewrites the From address
 
 Google replaces any `From` that is not the authenticated mailbox or a verified
 "Send mail as" alias — which breaks your branding and DKIM alignment at once. So
-`MAIL_FROM_ADDRESS` and `SMTP_USER` must be the same address. The preflight
-checks this.
+a Google mailbox's From address and SMTP username must match; saving one that
+does not is refused, and so is starting a campaign that overrides the sender on
+such a mailbox.
 
 ---
 

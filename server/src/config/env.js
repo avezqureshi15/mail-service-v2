@@ -47,6 +47,15 @@ const schema = z
 
     TOKEN_HMAC_SECRET: secret('TOKEN_HMAC_SECRET'),
     SESSION_SECRET: secret('SESSION_SECRET'),
+    // Encrypts the SMTP and IMAP passwords held in the `mailboxes` table.
+    // Exactly 32 bytes, as 64 hex characters - see lib/secret-box.js.
+    //
+    // Losing or changing it makes every stored credential unreadable, and the
+    // mailboxes have to be re-entered. Back it up with the database.
+    SECRETS_KEY: required('SECRETS_KEY').regex(
+      /^[0-9a-fA-F]{64}$/,
+      'SECRETS_KEY must be 64 hex characters (32 bytes) - generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+    ),
 
     SENDING_DOMAIN: required('SENDING_DOMAIN'),
     MAIL_FROM_NAME: required('MAIL_FROM_NAME'),

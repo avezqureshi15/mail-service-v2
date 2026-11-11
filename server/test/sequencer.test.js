@@ -5,7 +5,7 @@ import './helpers/test-db.js';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { setupTestSchema, teardownTestSchema } from './helpers/test-db.js';
+import { setupTestSchema, teardownTestSchema, makeTestMailbox } from './helpers/test-db.js';
 import { query, execute } from '../src/db/index.js';
 import { runSequencerPass } from '../src/workers/sequencer.js';
 import {
@@ -14,7 +14,14 @@ import {
 import { upsertContact } from '../src/db/repositories/contacts.js';
 import { suppress } from '../src/db/repositories/suppressions.js';
 
-before(setupTestSchema);
+let mailbox;
+
+before(async () => {
+  await setupTestSchema();
+  // Jobs are stamped with the mailbox that will send them, so a sequence
+  // without one queues nothing at all.
+  mailbox = await makeTestMailbox({ isDefault: true });
+});
 after(teardownTestSchema);
 
 /** Builds an isolated 3-step sequence with one enrolled contact. */
@@ -27,6 +34,7 @@ async function makeSequence(emailLocalPart) {
     subject: 'Step one',
     htmlBody: '<p>Hello {{first_name}}</p>',
     isSequence: true,
+    mailboxId: mailbox.id,
   });
 
   await replaceSteps(campaign.id, [

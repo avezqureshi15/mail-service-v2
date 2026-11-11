@@ -144,11 +144,20 @@ export function composeMessage({
   campaign,
   step,
   contact,
+  // The mailbox this campaign sends from. Required, with no env fallback:
+  // silently defaulting to a process-wide address is how a message ends up
+  // going out from the wrong account with nothing in the logs to show it.
+  mailbox,
   // Message-ID of step 1, so a follow-up threads onto the original
   // conversation instead of arriving as a fresh cold email.
   threadMessageId = null,
 }) {
-  const messageId = createMessageId(env.SENDING_DOMAIN);
+  if (!mailbox) throw new Error("composeMessage requires the campaign's mailbox");
+
+  // On the mailbox's own sending domain, not a global one. A Message-ID whose
+  // domain does not match the From domain is a mild spam signal in its own
+  // right, and the inbox poller uses the match to recognise our own mail.
+  const messageId = createMessageId(mailbox.sending_domain);
 
   const token = createUnsubscribeToken({
     contactId: contact.id,
@@ -192,9 +201,14 @@ export function composeMessage({
 
   const text = htmlToText(html);
 
-  const fromName = campaign.from_name || env.MAIL_FROM_NAME;
-  const fromAddress = campaign.from_email || env.MAIL_FROM_ADDRESS;
-  const replyTo = campaign.reply_to || env.replyTo;
+  const fromName = campaign.from_name || mailbox.from_name;
+  // A campaign may still override the address where the provider permits it
+  // (a verified Zoho alias, say). Where the provider rewrites anything other
+  // than the authenticated mailbox - Gmail does - the override is refused
+  // when the campaign is started, not silently honoured here and rewritten
+  // in flight, which would break DKIM alignment with no error anywhere.
+  const fromAddress = campaign.from_email || mailbox.from_email;
+  const replyTo = campaign.reply_to || mailbox.reply_to || mailbox.from_email;
 
   const headers = {
     // RFC 8058. Gmail and Yahoo surface a native Unsubscribe control when

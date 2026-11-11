@@ -19,7 +19,7 @@
  * every guess ever made.
  */
 
-import { env } from '../config/env.js';
+import { activeMailboxes } from '../db/repositories/mailboxes.js';
 import {
   predictionsAwaitingConfirmation, recordPredictionEvent,
   refreshPredictionOutcome, confirmPattern,
@@ -96,8 +96,12 @@ async function loop() {
 
 export function startDeliveryConfirmer() {
   if (running) return;
-  if (!env.IMAP_ENABLED) {
-    log('disabled (IMAP_ENABLED=false) - without bounce detection, silence proves nothing');
+  // The gate is now per mailbox, inside predictionsAwaitingConfirmation: a
+  // send from a mailbox with IMAP off is never confirmed, while sends from
+  // mailboxes that do watch their inbox still are. Refusing to start at all
+  // would switch the feature off for every mailbox because one has it off.
+  if (!activeMailboxes().some((m) => m.imap_enabled)) {
+    log('no mailbox has IMAP enabled - without bounce detection, silence proves nothing');
     return;
   }
   running = true;

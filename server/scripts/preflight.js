@@ -1,16 +1,25 @@
 #!/usr/bin/env node
 /**
- * Checks everything that can be checked before credentials exist.
+ * Checks everything about a mailbox that can be checked without sending.
  *
  *   npm run preflight
+ *   npm run preflight -- --mailbox 2
  *
- * Confirms the Zoho hosts resolve, the ports are open, TLS negotiates and
- * the certificates are valid - so when you do add the app password, an
- * authentication failure means the password, not the network.
+ * Confirms the hosts resolve, the ports are open, TLS negotiates and the
+ * certificates are valid - so when authentication does fail, it means the
+ * password rather than the network.
+ *
+ * Reads the mailbox from the database, not .env, so it diagnoses the account
+ * the service will actually send from. Without --mailbox it uses the default.
  */
+import { parseArgs } from 'node:util';
 import { env } from '../src/config/env.js';
 import { resolveHost, probe } from '../src/lib/smtp-probe.js';
 import { providerFromHost } from '../src/config/providers.js';
+import { loadMailboxes, allMailboxes, defaultMailbox } from '../src/db/repositories/mailboxes.js';
+import { closePool } from '../src/db/index.js';
+
+const { values: args } = parseArgs({ options: { mailbox: { type: 'string' } }, strict: false });
 
 const green = (s) => `\x1b[32m${s}\x1b[0m`;
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
@@ -27,16 +36,42 @@ const line = (ok, label, detail) => {
 
 console.log(`\n${bold('Preflight')}  ${dim('(no credentials are sent)')}\n`);
 
-const provider = env.provider;
+await loadMailboxes();
+
+const mailbox = args.mailbox
+  ? allMailboxes().find((m) => String(m.id) === args.mailbox
+      || m.label.toLowerCase() === args.mailbox.toLowerCase()
+      || m.from_email.toLowerCase() === args.mailbox.toLowerCase())
+  : defaultMailbox();
+
+if (!mailbox) {
+  const known = allMailboxes().map((m) => `${m.id}: ${m.label} <${m.from_email}>`);
+  console.log(red(args.mailbox ? `No mailbox matching "${args.mailbox}".` : 'No default mailbox configured.'));
+  if (known.length) {
+    console.log('');
+    console.log('Known mailboxes:');
+    for (const k of known) console.log(`  ${k}`);
+    console.log('');
+  } else {
+    console.log('');
+    console.log('Add one in Settings > Mailboxes.');
+    console.log('');
+  }
+  await closePool();
+  process.exit(1);
+}
+
+const provider = mailbox.preset;
+console.log(bold(`Mailbox: ${mailbox.label} <${mailbox.from_email}>`));
 console.log(bold(`Provider: ${provider.label}${provider.region ? ` (${provider.region})` : ''}`));
 console.log(dim(`      SPF include required: ${provider.spfInclude ?? 'unknown'}`));
 console.log(dim(`      Daily ceiling: ~${provider.dailyLimit} messages`));
 console.log('');
 
 const targets = [
-  { label: 'SMTP', host: env.SMTP_HOST, port: env.SMTP_PORT, implicitTls: env.smtpSecure, protocol: 'smtp' },
-  ...(env.IMAP_ENABLED
-    ? [{ label: 'IMAP', host: env.IMAP_HOST, port: env.IMAP_PORT, implicitTls: true, protocol: 'imap' }]
+  { label: 'SMTP', host: mailbox.smtp_host, port: mailbox.smtp_port, implicitTls: mailbox.smtp_port === 465, protocol: 'smtp' },
+  ...(mailbox.imap_enabled
+    ? [{ label: 'IMAP', host: mailbox.imap_host, port: mailbox.imap_port, implicitTls: true, protocol: 'imap' }]
     : []),
 ];
 
@@ -73,38 +108,42 @@ console.log(bold('Configuration'));
 
 // Both hosts must belong to the same provider, or one half of the service
 // authenticates somewhere the other does not.
-const sameProvider = !env.IMAP_ENABLED
-  || providerFromHost(env.SMTP_HOST) === providerFromHost(env.IMAP_HOST);
+const sameProvider = !mailbox.imap_enabled
+  || providerFromHost(mailbox.smtp_host) === providerFromHost(mailbox.imap_host);
 line(sameProvider, 'SMTP and IMAP are the same provider',
-  sameProvider ? `both ${provider.label}` : `${env.SMTP_HOST} and ${env.IMAP_HOST} do not match`);
+  sameProvider ? `both ${provider.label}` : `${mailbox.smtp_host} and ${mailbox.imap_host} do not match`);
 
 // Gmail silently rewrites a From that is not the authenticated mailbox or a
 // verified alias, which breaks branding and DKIM alignment at once.
 if (provider.fromMustMatchUser) {
-  const matches = env.MAIL_FROM_ADDRESS.toLowerCase() === env.SMTP_USER.toLowerCase();
+  const matches = mailbox.from_email.toLowerCase() === mailbox.smtp_user.toLowerCase();
   line(matches, 'From address matches the authenticated mailbox',
     matches
-      ? env.MAIL_FROM_ADDRESS
-      : `${provider.label} will rewrite From to ${env.SMTP_USER} unless ${env.MAIL_FROM_ADDRESS} is a verified "Send mail as" alias`);
+      ? mailbox.from_email
+      : `${provider.label} will rewrite From to ${mailbox.smtp_user} unless ${mailbox.from_email} is a verified "Send mail as" alias`);
 }
 
-const fromDomain = env.MAIL_FROM_ADDRESS.split('@')[1] ?? '';
-line(fromDomain.toLowerCase() === env.SENDING_DOMAIN.toLowerCase(),
+const fromDomain = mailbox.from_email.split('@')[1] ?? '';
+line(fromDomain.toLowerCase() === mailbox.sending_domain.toLowerCase(),
   'From address is on the sending domain',
-  fromDomain.toLowerCase() === env.SENDING_DOMAIN.toLowerCase()
-    ? `${env.MAIL_FROM_ADDRESS}`
-    : `${env.MAIL_FROM_ADDRESS} is not on ${env.SENDING_DOMAIN} - DKIM will not align and DMARC will fail`);
+  fromDomain.toLowerCase() === mailbox.sending_domain.toLowerCase()
+    ? `${mailbox.from_email}`
+    : `${mailbox.from_email} is not on ${mailbox.sending_domain} - DKIM will not align and DMARC will fail`);
 
 const placeholder = /CHANGE[-_]?ME/i;
 const unset = Object.entries({
-  MAIL_FROM_ADDRESS: env.MAIL_FROM_ADDRESS,
-  SMTP_USER: env.SMTP_USER,
-  SMTP_PASSWORD: env.SMTP_PASSWORD,
+  'mailbox from address': mailbox.from_email,
+  'mailbox SMTP username': mailbox.smtp_user,
   COMPANY_POSTAL_ADDRESS: env.COMPANY_POSTAL_ADDRESS,
 }).filter(([, value]) => placeholder.test(String(value))).map(([key]) => key);
 
-line(unset.length === 0, 'Credentials and identity filled in',
-  unset.length === 0 ? 'all set' : `still placeholders: ${unset.join(', ')} - run: npm run setup`);
+line(unset.length === 0, 'Identity filled in',
+  unset.length === 0 ? 'all set' : `still placeholders: ${unset.join(', ')}`);
+
+line(Boolean(mailbox.last_verified_at), 'Credentials verified at least once',
+  mailbox.last_verified_at
+    ? `last verified ${new Date(mailbox.last_verified_at).toISOString()}`
+    : 'never - use Test connection in Settings > Mailboxes, or npm run check:smtp');
 
 line(!env.APP_BASE_URL.includes('localhost'), 'Public base URL set',
   env.APP_BASE_URL.includes('localhost')

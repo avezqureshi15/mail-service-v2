@@ -45,7 +45,7 @@ export default function Dashboard() {
   if (error && !data) return <div className="alert error">{error}</div>;
   if (!data) return <p className="muted">Loading...</p>;
 
-  const { domainAuth, sender, warmup, delivery, contacts, suppressions, campaigns, config } = data;
+  const { domainAuth, sender, senders = [], warmup, delivery, contacts, suppressions, campaigns, config } = data;
   const detail = domainAuth?.detail;
 
   return (
@@ -81,11 +81,66 @@ export default function Dashboard() {
         </div>
       )}
 
-      {!config.imapEnabled && (
+      {config.mailboxCount === 0 && (
         <div className="alert warn">
-          <strong>IMAP is off.</strong> Bounce handling and reply detection are disabled, so dead
-          addresses will not be suppressed automatically and sequences will not stop when someone
-          replies. Set <span className="mono">IMAP_ENABLED=true</span> in the server environment.
+          <strong>No sending mailboxes.</strong> Campaigns cannot be started until one is
+          configured. Add it under Settings &rsaquo; Mailboxes.
+        </div>
+      )}
+
+      {config.mailboxCount > 0 && !config.imapEnabled && (
+        <div className="alert warn">
+          <strong>IMAP is off everywhere.</strong> Bounce handling and reply detection are
+          disabled, so dead addresses will not be suppressed automatically and sequences will
+          not stop when someone replies. Turn it on for a mailbox under Settings &rsaquo;
+          Mailboxes.
+        </div>
+      )}
+
+      {senders.length > 1 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3>Sending mailboxes</h3>
+          <p className="muted" style={{ fontSize: 13, marginTop: -6 }}>
+            Each mailbox paces itself, so one hitting its ceiling does not stop the others.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Mailbox</th>
+                <th>Today</th>
+                <th>Last hour</th>
+                <th>Warm-up</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody>
+              {senders.map((s) => (
+                <tr key={s.mailboxId}>
+                  <td>
+                    <div>{s.mailboxLabel}</div>
+                    <div className="muted" style={{ fontSize: 12 }}>{s.fromEmail}</div>
+                  </td>
+                  <td>{s.sentToday} / {s.dailyAllowance}</td>
+                  <td>{s.sentLastHour} / {s.hourlyCap}</td>
+                  <td>
+                    {s.warmup.active ? `day ${s.warmup.day} of ${s.warmup.totalDays}` : 'complete'}
+                  </td>
+                  <td>
+                    {s.pausedUntil
+                      ? <span className="badge bad" title={s.pauseReason ?? ''}>paused</span>
+                      : s.domainAuth.passing === false
+                        ? <span className="badge bad" title={s.domainAuth.detail ?? ''}>DNS failing</span>
+                        : s.running
+                          ? <span className="badge good">sending</span>
+                          : <span className="badge neutral" title={s.reason ?? ''}>idle</span>}
+                    {s.reason && !s.pausedUntil && (
+                      <div className="muted" style={{ fontSize: 12 }}>{s.reason}</div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 

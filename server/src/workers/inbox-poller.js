@@ -1,8 +1,11 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { env } from '../config/env.js';
 import { queryOne, execute } from '../db/index.js';
 import { getSettings } from '../db/repositories/settings.js';
+import {
+  defaultMailbox, activeMailboxes, getMailbox, mailboxSecrets, sendingDomains,
+  recordMailboxError,
+} from '../db/repositories/mailboxes.js';
 import { suppress } from '../db/repositories/suppressions.js';
 import { setStatusByEmail, findByEmail } from '../db/repositories/contacts.js';
 import { exitEnrollment } from '../db/repositories/campaigns.js';
@@ -31,21 +34,23 @@ import { applyUnsubscribe } from '../lib/apply-unsubscribe.js';
 
 let timer = null;
 let running = false;
-let scanning = false;
+/** Mailbox ids with a scan in flight. */
+const scanning = new Set();
 
 const log = (...args) => console.log('[inbox]', ...args);
 
-async function connect() {
+async function connect(mailbox) {
   // Resolved up front so a broken local resolver cannot stop bounce and
   // reply detection; `servername` keeps certificate validation on the
   // hostname even when the connection goes to an IP.
-  const target = await connectionTargetFor(env.IMAP_HOST);
+  const target = await connectionTargetFor(mailbox.imap_host);
+  const { imapPassword } = await mailboxSecrets(mailbox.id);
 
   return new ImapFlow({
     host: target.host,
-    port: env.IMAP_PORT,
+    port: mailbox.imap_port,
     secure: true,
-    auth: { user: env.IMAP_USER, pass: env.IMAP_PASSWORD },
+    auth: { user: mailbox.imap_user, pass: imapPassword },
     tls: {
       rejectUnauthorized: true,
       minVersion: 'TLSv1.2',
@@ -69,8 +74,14 @@ async function findOurMessageId(...sources) {
     if (!source) continue;
     const text = Array.isArray(source) ? source.join(' ') : String(source);
     const candidates = text.match(MESSAGE_ID_PATTERN) ?? [];
+    // A cheap pre-filter so a long quoted thread does not cost one database
+    // lookup per Message-ID it mentions. With several mailboxes there is no
+    // single sending domain any more, so it checks all of them - and falls
+    // through to the database when none are known, since findJobByMessageId
+    // is the authoritative answer either way.
+    const domains = sendingDomains();
     for (const candidate of candidates) {
-      if (!candidate.includes(`@${env.SENDING_DOMAIN}`)) continue;
+      if (domains.length > 0 && !domains.some((d) => candidate.includes(`@${d}`))) continue;
       const job = await findJobByMessageId(candidate);
       if (job) return { messageId: candidate, job };
     }
@@ -124,11 +135,21 @@ function readDeliveryStatus(parsed) {
 
 // ON CONFLICT so a re-read message, or a provider that sends the same DSN
 // twice, cannot double-count against the bounce rate that auto-pauses sending.
+/**
+ * `mailbox_id` comes from the matched send job, NOT from the inbox the
+ * message arrived in. A bounce for a message sent by mailbox A can land in
+ * mailbox B when the campaign's reply-to points there; recording it against B
+ * would show B with a terrible bounce rate having sent nothing.
+ *
+ * The ON CONFLICT key is deliberately left alone. Adding mailbox_id to it
+ * would break the dedupe when the same DSN reaches two inboxes, and that
+ * double-count feeds the rate that auto-pauses sending.
+ */
 function recordBounce(values) {
   return execute(
     `INSERT INTO bounces (message_id, contact_id, campaign_id, email, bounce_type, smtp_code,
-                          diagnostic, reason, dsn_status, learns_address)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                          diagnostic, reason, dsn_status, learns_address, mailbox_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT (message_id, email, bounce_type) DO NOTHING`,
     values,
   );
@@ -188,6 +209,7 @@ export async function handleBounce({ parsed, settings }) {
     reason,
     dsn.dsnStatus,
     learnsAddress,
+    match?.job?.mailbox_id ?? null,
   ]);
 
   // Recorded whatever the reason, including when it teaches us nothing -
@@ -241,6 +263,10 @@ export async function handleComplaint({ parsed }) {
     'complaint',
     '',
     'Feedback loop complaint',
+    null,
+    null,
+    null,
+    match?.job?.mailbox_id ?? null,
   ]);
 
   // A complaint is the strongest possible signal. Suppress immediately.
@@ -315,12 +341,15 @@ export async function handleReply({ parsed }) {
 
   if (!alreadyRecorded) {
     await execute(
-      'INSERT INTO replies (contact_id, campaign_id, in_reply_to, email) VALUES ($1, $2, $3, $4)',
+      `INSERT INTO replies (contact_id, campaign_id, in_reply_to, email, mailbox_id)
+       VALUES ($1, $2, $3, $4, $5)`,
       [
         match.job.contact_id,
         match.job.campaign_id,
         match.messageId,
         match.job.contact_email ?? '',
+        // The mailbox that SENT it, not the one it arrived in.
+        match.job.mailbox_id ?? null,
       ],
     );
     // A reply is the strongest confirmation there is: a human is reading
@@ -387,11 +416,22 @@ export async function handleUnsubscribeRequest({ parsed }) {
 // without wading through years of archive.
 const FIRST_RUN_DAYS = 7;
 
-const readState = () => queryOne('SELECT * FROM imap_state WHERE id = 1');
+// Keyed on the mailbox now that there can be more than one inbox to track.
+// The row carried forward by the migration is attached to the seeded mailbox,
+// so last_uid survives and the first pass after the upgrade does not re-scan
+// a week of mail and replay unsubscribes that are not idempotent.
+const readState = (mailboxId) => queryOne(
+  'SELECT * FROM imap_state WHERE mailbox_id = $1',
+  [mailboxId],
+);
 
-const writeState = (uidValidity, lastUid) => execute(
-  `UPDATE imap_state SET uid_validity = $1, last_uid = $2, updated_at = now() WHERE id = 1`,
-  [String(uidValidity), lastUid],
+const writeState = (mailboxId, uidValidity, lastUid) => execute(
+  `INSERT INTO imap_state (mailbox_id, mailbox, uid_validity, last_uid, last_scan_at, updated_at)
+   VALUES ($1, 'INBOX', $2, $3, now(), now())
+   ON CONFLICT (mailbox_id, mailbox) DO UPDATE SET
+     uid_validity = excluded.uid_validity, last_uid = excluded.last_uid,
+     last_scan_at = excluded.last_scan_at, updated_at = excluded.updated_at`,
+  [mailboxId, String(uidValidity), lastUid],
 );
 
 /**
@@ -404,12 +444,31 @@ const writeState = (uidValidity, lastUid) => execute(
  * marking their mail read to keep its own bookmark would be rude and
  * unreliable.
  */
-export async function scanInbox() {
-  if (scanning) return { skipped: true };
-  scanning = true;
+/**
+ * Reads one mailbox's inbox.
+ *
+ * @param {object|number} target The mailbox, or its id. Defaults to the
+ *   default mailbox so the manual "scan now" button and the tests can call
+ *   this without plumbing one through.
+ */
+export async function scanInbox(target = null) {
+  const mailbox = typeof target === 'number' ? getMailbox(target) : (target ?? defaultMailbox());
+  if (!mailbox) {
+    log('no mailbox configured - nothing to poll');
+    return { skipped: true };
+  }
+  if (!mailbox.imap_enabled) {
+    return { skipped: true, reason: 'IMAP is off for this mailbox' };
+  }
+
+  // One scan at a time per mailbox. Each scan can hold a few hundred full
+  // message sources in memory through simpleParser, so several at once is a
+  // real spike rather than a theoretical one.
+  if (scanning.has(mailbox.id)) return { skipped: true };
+  scanning.add(mailbox.id);
 
   const settings = getSettings();
-  const client = await connect();
+  const client = await connect(mailbox);
   const counts = { examined: 0, bounces: 0, complaints: 0, replies: 0, unsubscribes: 0 };
 
   try {
@@ -418,7 +477,8 @@ export async function scanInbox() {
 
     try {
       const box = client.mailbox;
-      const state = await readState();
+      // A mailbox that has never been polled has no row yet.
+      const state = await readState(mailbox.id) ?? { uid_validity: null, last_uid: 0 };
       const validityChanged = state.uid_validity
         && String(state.uid_validity) !== String(box.uidValidity);
 
@@ -439,7 +499,7 @@ export async function scanInbox() {
       }
 
       if (range.length === 0) {
-        await writeState(box.uidValidity, state.last_uid);
+        await writeState(mailbox.id, box.uidValidity, state.last_uid);
         return counts;
       }
 
@@ -486,7 +546,7 @@ export async function scanInbox() {
         highest = Math.max(highest, uid);
       }
 
-      await writeState(box.uidValidity, highest);
+      await writeState(mailbox.id, box.uidValidity, highest);
 
       if (range.length > batch.length) {
         log(`${range.length - batch.length} message(s) left for the next pass`);
@@ -495,7 +555,7 @@ export async function scanInbox() {
       lock.release();
     }
   } finally {
-    scanning = false;
+    scanning.delete(mailbox.id);
     try {
       await client.logout();
     } catch {
@@ -510,29 +570,131 @@ export async function scanInbox() {
 }
 
 
-async function loop() {
-  if (!running) return;
-  try {
-    await scanInbox();
-  } catch (error) {
-    log(`scan failed: ${error.message}`);
+// --- Supervisor -------------------------------------------------------------
+
+/**
+ * One poller per mailbox with IMAP turned on.
+ *
+ * Two rules that were not needed when there was a single hard-coded inbox:
+ *
+ * Authentication failures stop the poller outright instead of retrying on a
+ * timer. A wrong password retried every two minutes is how an account gets
+ * locked, and multiplying that by the number of mailboxes makes it likely
+ * rather than possible. The error is recorded on the mailbox so the Settings
+ * tab can show it; fixing the password restarts the poller.
+ *
+ * Everything else backs off exponentially, so a provider having a bad
+ * afternoon is not hammered by every mailbox at once.
+ */
+
+const MAX_BACKOFF_MS = 30 * 60_000;
+const AUTH_FAILURE = /AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed|authentication failed/i;
+
+/** mailboxId -> { timer, stopped, failures } */
+const pollers = new Map();
+
+function pollerFor(mailboxId) {
+  let state = pollers.get(mailboxId);
+  if (!state) {
+    state = { timer: null, stopped: false, failures: 0 };
+    pollers.set(mailboxId, state);
   }
-  if (running) timer = setTimeout(loop, env.IMAP_POLL_SECONDS * 1000);
+  return state;
+}
+
+async function pollOnce(mailboxId) {
+  const state = pollerFor(mailboxId);
+  const mailbox = getMailbox(mailboxId);
+
+  if (!mailbox || !mailbox.is_active || !mailbox.imap_enabled) {
+    state.stopped = true;
+    pollers.delete(mailboxId);
+    return;
+  }
+
+  try {
+    await scanInbox(mailbox);
+    state.failures = 0;
+    await writeScanOutcome(mailboxId, null);
+  } catch (error) {
+    if (AUTH_FAILURE.test(error.message)) {
+      log(`[${mailbox.label}] authentication failed - poller stopped until the password is fixed`);
+      await writeScanOutcome(mailboxId, error.message);
+      await recordMailboxError(mailboxId, `IMAP authentication failed: ${error.message}`);
+      state.stopped = true;
+      pollers.delete(mailboxId);
+      return;
+    }
+
+    state.failures += 1;
+    await writeScanOutcome(mailboxId, error.message);
+    log(`[${mailbox.label}] scan failed (${state.failures}): ${error.message}`);
+  }
+
+  if (state.stopped || !running) return;
+
+  const base = (mailbox.imap_poll_seconds ?? 120) * 1000;
+  const delay = Math.min(base * (2 ** state.failures), MAX_BACKOFF_MS);
+  state.timer = setTimeout(() => pollOnce(mailboxId), delay);
+}
+
+function writeScanOutcome(mailboxId, error) {
+  return execute(
+    `UPDATE imap_state
+        SET last_scan_at = now(),
+            last_error = $1,
+            consecutive_failures = CASE WHEN $1::text IS NULL THEN 0 ELSE consecutive_failures + 1 END,
+            updated_at = now()
+      WHERE mailbox_id = $2`,
+    [error ? String(error).slice(0, 1000) : null, mailboxId],
+  ).catch(() => 0);
+}
+
+/** Starts a poller for any IMAP-enabled mailbox that does not have one. */
+function reconcilePollers() {
+  if (!running) return;
+
+  let index = 0;
+  for (const mailbox of activeMailboxes()) {
+    if (!mailbox.imap_enabled) continue;
+    if (pollers.has(mailbox.id)) continue;
+
+    const state = pollerFor(mailbox.id);
+    // Staggered, so N mailboxes do not all dial out in the same second.
+    state.timer = setTimeout(() => pollOnce(mailbox.id), 10_000 + index * 3_000);
+    index += 1;
+    log(`polling "${mailbox.label}" every ${mailbox.imap_poll_seconds ?? 120}s`);
+  }
 }
 
 export function startInboxPoller() {
   if (running) return;
-  if (!env.IMAP_ENABLED) {
-    log('disabled (IMAP_ENABLED=false) - bounce handling and reply detection are OFF');
-    return;
-  }
   running = true;
-  log(`worker started, polling every ${env.IMAP_POLL_SECONDS}s`);
-  timer = setTimeout(loop, 10_000);
+
+  const enabled = activeMailboxes().filter((m) => m.imap_enabled);
+  if (enabled.length === 0) {
+    log('no mailbox has IMAP enabled - bounce handling and reply detection are OFF');
+  }
+
+  reconcilePollers();
+  // Picks up mailboxes added or re-enabled while the process is running, and
+  // restarts a poller whose password has been corrected.
+  timer = setInterval(reconcilePollers, 60_000);
+  timer.unref?.();
 }
 
 export function stopInboxPoller() {
   running = false;
-  if (timer) clearTimeout(timer);
+  if (timer) clearInterval(timer);
   timer = null;
+  for (const state of pollers.values()) {
+    state.stopped = true;
+    if (state.timer) clearTimeout(state.timer);
+  }
+  pollers.clear();
+}
+
+/** Mailbox ids currently being polled. Exported for the dashboard and tests. */
+export function activePollers() {
+  return [...pollers.keys()];
 }

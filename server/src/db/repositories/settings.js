@@ -1,6 +1,10 @@
 import { query, execute } from '../index.js';
 import { env } from '../../config/env.js';
 import { pacingDefaults } from '../../config/providers.js';
+import {
+  currentDailyAllowance as warmupAllowance,
+  warmupStage as warmupStageFor,
+} from '../../lib/warmup.js';
 
 // Volume and pacing are derived from the configured provider's recommended
 // cap, so the hourly figure and send interval can never silently contradict
@@ -104,35 +108,17 @@ export async function setSettings(patch) {
 }
 
 /**
- * Today's allowance. During warm-up this is the ramp value for the current
- * day, which is lower than dailyCap - whichever is smaller wins.
+ * Today's allowance for the global settings.
+ *
+ * The arithmetic itself lives in lib/warmup.js, because each mailbox now
+ * ramps on its own schedule and both this module and the mailbox repository
+ * need the same answer. These two wrappers keep the existing callers working
+ * while there is only one implementation to get right.
  */
 export function currentDailyAllowance(settings = getSettings()) {
-  if (!settings.warmupEnabled || !settings.warmupStartedOn) {
-    return settings.dailyCap;
-  }
-  const started = new Date(`${settings.warmupStartedOn}T00:00:00Z`);
-  if (Number.isNaN(started.getTime())) return settings.dailyCap;
-
-  const dayIndex = Math.floor((Date.now() - started.getTime()) / 86_400_000);
-  if (dayIndex < 0) return 0;
-
-  const schedule = settings.warmupSchedule ?? [];
-  if (dayIndex >= schedule.length) return settings.dailyCap;
-  return Math.min(schedule[dayIndex], settings.dailyCap);
+  return warmupAllowance(settings);
 }
 
 export function warmupStage(settings = getSettings()) {
-  if (!settings.warmupEnabled || !settings.warmupStartedOn) {
-    return { active: false, day: null, totalDays: 0, allowance: settings.dailyCap };
-  }
-  const started = new Date(`${settings.warmupStartedOn}T00:00:00Z`);
-  const dayIndex = Math.floor((Date.now() - started.getTime()) / 86_400_000);
-  const totalDays = (settings.warmupSchedule ?? []).length;
-  return {
-    active: dayIndex < totalDays,
-    day: dayIndex + 1,
-    totalDays,
-    allowance: currentDailyAllowance(settings),
-  };
+  return warmupStageFor(settings);
 }

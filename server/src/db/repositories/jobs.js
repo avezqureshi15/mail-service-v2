@@ -12,23 +12,27 @@ export function domainOf(email) {
  * round trip instead of three thousand - which matters far more now the
  * database is across a network.
  */
-export async function queueJobs(campaignId, contacts, stepNo = 1, tenantId = 1) {
+export async function queueJobs(campaignId, contacts, stepNo = 1, tenantId = 1, mailboxId = null) {
   if (contacts.length === 0) return 0;
+  if (!mailboxId) throw new Error('queueJobs requires the campaign’s mailbox');
   return execute(
-    `INSERT INTO send_jobs (tenant_id, campaign_id, contact_id, step_no, recipient_domain, next_attempt_at)
-     SELECT $1, $2, c.id, $3, c.domain, now()
+    `INSERT INTO send_jobs (tenant_id, campaign_id, contact_id, step_no, recipient_domain, mailbox_id, next_attempt_at)
+     SELECT $1, $2, c.id, $3, c.domain, $6, now()
        FROM unnest($4::int[], $5::text[]) AS c(id, domain)
      ON CONFLICT (campaign_id, contact_id, step_no) DO NOTHING`,
-    [tenantId, campaignId, stepNo, contacts.map((c) => c.id), contacts.map((c) => domainOf(c.email))],
+    [tenantId, campaignId, stepNo, contacts.map((c) => c.id), contacts.map((c) => domainOf(c.email)), mailboxId],
   );
 }
 
-export async function queueSingleJob({ campaignId, contactId, email, stepNo, tenantId = 1 }) {
+export async function queueSingleJob({ campaignId, contactId, email, stepNo, tenantId = 1, mailboxId }) {
+  // Stamped, never left to be joined later: a job with no mailbox is claimed
+  // by no sender loop and would stall the sequence with nothing in the log.
+  if (!mailboxId) throw new Error('queueSingleJob requires the campaign’s mailbox');
   return (await execute(
-    `INSERT INTO send_jobs (tenant_id, campaign_id, contact_id, step_no, recipient_domain, next_attempt_at)
-     VALUES ($1, $2, $3, $4, $5, now())
+    `INSERT INTO send_jobs (tenant_id, campaign_id, contact_id, step_no, recipient_domain, mailbox_id, next_attempt_at)
+     VALUES ($1, $2, $3, $4, $5, $6, now())
      ON CONFLICT (campaign_id, contact_id, step_no) DO NOTHING`,
-    [tenantId, campaignId, contactId, stepNo, domainOf(email)],
+    [tenantId, campaignId, contactId, stepNo, domainOf(email), mailboxId],
   )) > 0;
 }
 
@@ -45,13 +49,17 @@ export async function queueSingleJob({ campaignId, contactId, email, stepNo, ten
  * Suppression is re-checked inside the same transaction, which is what makes
  * an unsubscribe arriving mid-campaign take effect for the rest of the run.
  *
+ */
+/**
  * @param {string[]} blockedDomains Receiving domains that have hit their
  *   hourly pacing limit; skipped until the bucket drains.
+ * @param {number} mailboxId Only this mailbox's work. Each sender loop owns
+ *   one mailbox, so the loops are disjoint and cannot contend for a row.
  */
-export function claimNextJob(blockedDomains = []) {
+export function claimNextJob(blockedDomains = [], mailboxId = null) {
   return transaction(async (tx) => {
     const job = await tx.queryOne(
-      `SELECT j.id, j.tenant_id, j.campaign_id, j.contact_id, j.step_no, j.attempts,
+      `SELECT j.id, j.tenant_id, j.campaign_id, j.contact_id, j.step_no, j.attempts, j.mailbox_id,
               c.email, c.first_name, c.last_name, c.company, c.custom_fields,
               c.status AS contact_status
          FROM send_jobs j
@@ -60,11 +68,16 @@ export function claimNextJob(blockedDomains = []) {
         WHERE j.status = 'queued'
           AND j.next_attempt_at <= now()
           AND k.status = 'sending'
+          -- An unstamped job belongs to no mailbox, so no loop may claim it.
+          -- Visibly stuck is the right failure here; silently sent from
+          -- whichever account happened to pick it up is not.
+          AND j.mailbox_id IS NOT NULL
+          AND ($2::int IS NULL OR j.mailbox_id = $2)
           AND NOT (j.recipient_domain = ANY($1::text[]))
         ORDER BY j.next_attempt_at, j.id
         LIMIT 1
           FOR UPDATE OF j SKIP LOCKED`,
-      [blockedDomains],
+      [blockedDomains, mailboxId],
     );
 
     if (!job) return null;
@@ -148,9 +161,12 @@ export function releaseStaleLocks(olderThanMinutes = 15) {
 
 // --- Pacing ----------------------------------------------------------------
 
-export async function sentInLastHour() {
+export async function sentInLastHour(mailboxId) {
   return (await queryOne(
-    "SELECT COUNT(*) AS n FROM send_jobs WHERE status = 'sent' AND sent_at >= now() - interval '1 hour'",
+    `SELECT COUNT(*) AS n FROM send_jobs
+      WHERE status = 'sent' AND sent_at >= now() - interval '1 hour'
+        AND ($1::int IS NULL OR mailbox_id = $1)`,
+    [mailboxId ?? null],
   )).n;
 }
 
@@ -170,24 +186,39 @@ export async function domainsOverHourlyCap(cap) {
   return rows.map((row) => row.recipient_domain);
 }
 
-export async function sentToday() {
-  const row = await queryOne('SELECT sent_count FROM send_counters WHERE day = CURRENT_DATE');
-  return row?.sent_count ?? 0;
+/**
+ * Sends recorded today for one mailbox - or, with no mailbox, the total
+ * across all of them.
+ *
+ * The total matters: while the sender is still a single global loop, it
+ * gates on this figure, and returning 0 for "no mailbox specified" would
+ * quietly switch the daily cap off entirely.
+ */
+export async function sentToday(mailboxId = null) {
+  const row = await queryOne(
+    `SELECT COALESCE(SUM(sent_count), 0) AS n FROM send_counters
+      WHERE day = CURRENT_DATE AND ($1::int IS NULL OR mailbox_id = $1)`,
+    [mailboxId],
+  );
+  return Number(row?.n ?? 0);
 }
 
-export function incrementSentToday() {
+export function incrementSentToday(mailboxId) {
   return execute(
-    `INSERT INTO send_counters (day, sent_count) VALUES (CURRENT_DATE, 1)
-     ON CONFLICT (day) DO UPDATE SET sent_count = send_counters.sent_count + 1`,
+    `INSERT INTO send_counters (mailbox_id, day, sent_count) VALUES ($1, CURRENT_DATE, 1)
+     ON CONFLICT (mailbox_id, day) DO UPDATE SET sent_count = send_counters.sent_count + 1`,
+    [mailboxId],
   );
 }
 
-export async function hasPendingWork() {
+export async function hasPendingWork(mailboxId = null) {
   const row = await queryOne(
     `SELECT 1 FROM send_jobs j
        JOIN campaigns k ON k.id = j.campaign_id
       WHERE j.status = 'queued' AND k.status = 'sending'
+        AND ($1::int IS NULL OR j.mailbox_id = $1)
       LIMIT 1`,
+    [mailboxId],
   );
   return Boolean(row);
 }

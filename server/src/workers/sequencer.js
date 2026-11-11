@@ -71,12 +71,21 @@ async function processDue() {
       continue;
     }
 
+    // A campaign with no mailbox cannot produce a sendable job. Skip rather
+    // than throw, so one misconfigured campaign does not stop the sequencer
+    // working through every other enrollment on this pass.
+    if (!enrollment.mailbox_id) {
+      log(`campaign ${enrollment.campaign_id} has no sending mailbox - skipping follow-up`);
+      continue;
+    }
+
     const added = await queueSingleJob({
       campaignId: enrollment.campaign_id,
       contactId: enrollment.contact_id,
       email: enrollment.email,
       stepNo: nextStepNo,
       tenantId: enrollment.tenant_id,
+      mailboxId: enrollment.mailbox_id,
     });
 
     if (added) {

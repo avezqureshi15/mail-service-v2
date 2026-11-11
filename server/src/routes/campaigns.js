@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import {
-  createCampaign, getCampaign, updateCampaign, listCampaigns, setCampaignStatus,
+  createCampaign, getCampaign, updateCampaign, reassignMailbox, listCampaigns, setCampaignStatus,
   deleteCampaign, getSteps, replaceSteps, countSteps, enrollContacts,
   enrollmentStats, exitEnrollment, listCategories, createCategory,
   listSubCategories, createSubCategory, subCategoryBelongsTo, getDefaultCategoryId,
@@ -16,6 +16,7 @@ import { lintContent } from '../mail/spam-lint.js';
 import { auditMergeFields, describeAudit } from '../lib/merge-fields.js';
 import { composeMessage, bodyHasUnsubscribe, sanitizeBody } from '../mail/compose.js';
 import { getTransport } from '../mail/transport.js';
+import { getMailbox } from '../db/repositories/mailboxes.js';
 import { requireAuth, validate } from '../middleware/index.js';
 import { senderStatus } from '../workers/sender.js';
 import { queryOne, transaction } from '../db/index.js';
@@ -47,8 +48,20 @@ const campaignSchema = z.object({
   fromEmail: z.string().trim().email().or(z.literal('')).default(''),
   replyTo: z.string().trim().email().or(z.literal('')).default(''),
   trackingEnabled: z.boolean().default(false),
+  // Which mailbox sends. Optional on save so a half-finished draft can be
+  // stored, and required at start, where refusing is actionable.
+  mailboxId: z.coerce.number().int().positive().nullable().optional(),
   steps: z.array(stepSchema).max(10).default([]),
 });
+
+/** Rejects a mailbox that does not exist or cannot send. */
+function validateMailboxChoice(mailboxId) {
+  if (mailboxId === null || mailboxId === undefined) return null;
+  const mailbox = getMailbox(mailboxId);
+  if (!mailbox) return 'That sending mailbox does not exist';
+  if (!mailbox.is_active) return `The mailbox "${mailbox.label}" is deactivated`;
+  return null;
+}
 
 campaignsRouter.get('/', validate(z.object({
   status: z.enum(['draft', 'scheduled', 'sending', 'paused', 'completed', 'cancelled']).optional(),
@@ -138,6 +151,9 @@ campaignsRouter.post('/', validate(campaignSchema), async (req, res, next) => {
       });
     }
 
+    const mailboxError = validateMailboxChoice(body.mailboxId);
+    if (mailboxError) return res.status(400).json({ error: mailboxError });
+
     const filing = await resolveFiling(body.categoryId ?? null, body.subCategoryId ?? null);
     if (filing.error) return res.status(400).json({ error: filing.error });
 
@@ -154,6 +170,7 @@ campaignsRouter.post('/', validate(campaignSchema), async (req, res, next) => {
       replyTo: body.replyTo,
       trackingEnabled: body.trackingEnabled,
       isSequence: body.steps.length > 1,
+      mailboxId: body.mailboxId ?? null,
       createdBy: req.user.id,
     });
 
@@ -203,6 +220,9 @@ campaignsRouter.put('/:id', validate(campaignSchema), async (req, res, next) => 
       return res.status(400).json({ error: 'Tracking requires TRACKING_DOMAIN to be configured.' });
     }
 
+    const mailboxError = validateMailboxChoice(body.mailboxId);
+    if (mailboxError) return res.status(400).json({ error: mailboxError });
+
     const filing = await resolveFiling(
       body.categoryId ?? campaign.category_id,
       // Explicit null clears the sub-category; omitting the field leaves it.
@@ -224,6 +244,16 @@ campaignsRouter.put('/:id', validate(campaignSchema), async (req, res, next) => 
       tracking_enabled: body.trackingEnabled,
       is_sequence: body.steps.length > 1,
     });
+
+    // Changing the mailbox has to take still-queued jobs with it, so it goes
+    // through its own transaction rather than the generic column patch.
+    // A draft has nothing queued yet, but a paused campaign being re-pointed
+    // does, and leaving those rows behind would keep sending from the old
+    // account after the operator believed they had moved it.
+    if ((body.mailboxId ?? null) !== (campaign.mailbox_id ?? null)) {
+      await reassignMailbox(campaign.id, body.mailboxId ?? null);
+    }
+
     await replaceSteps(campaign.id, buildSteps(body));
 
     res.json({ campaign: await withDetail(await getCampaign(campaign.id)) });
@@ -242,6 +272,42 @@ campaignsRouter.delete('/:id', async (req, res, next) => {
     next(error);
   }
 });
+
+/**
+ * The mailbox a campaign sends from, with the reason when there isn't one.
+ *
+ * Every path that composes or sends needs this, and each needs to fail in a
+ * way the rep can act on rather than throwing a bare TypeError out of
+ * composeMessage.
+ */
+function resolveCampaignMailbox(campaign) {
+  if (!campaign.mailbox_id) {
+    return { error: 'This campaign has no sending mailbox. Pick one in the campaign setup step.' };
+  }
+
+  const mailbox = getMailbox(campaign.mailbox_id);
+  if (!mailbox) {
+    return { error: 'The mailbox this campaign was set up with no longer exists.' };
+  }
+  if (!mailbox.is_active) {
+    return { error: `The mailbox "${mailbox.label}" is deactivated. Re-activate it or pick another.` };
+  }
+
+  // Gmail accepts only the authenticated mailbox or a verified alias as the
+  // From address. Anything else is silently rewritten, which breaks DKIM
+  // alignment and sends the whole campaign to spam with no error anywhere -
+  // so it is refused here instead.
+  if (mailbox.preset.fromMustMatchUser
+      && campaign.from_email
+      && campaign.from_email.toLowerCase() !== mailbox.from_email.toLowerCase()) {
+    return {
+      error: `${mailbox.preset.label} will rewrite the From address unless it is `
+        + `${mailbox.from_email}. Clear the campaign's sender override or use a mailbox that allows it.`,
+    };
+  }
+
+  return { mailbox };
+}
 
 /** Live content score for the composer. */
 campaignsRouter.post('/lint', validate(z.object({
@@ -280,11 +346,15 @@ campaignsRouter.post('/:id/preview', validate(z.object({
     // and the In-Reply-To header. Preview has to pass a thread id too, or it
     // shows a subject the recipient will never see - and the rep concludes
     // the follow-ups are not threading.
+    const { mailbox, error } = resolveCampaignMailbox(campaign);
+    if (error) return res.status(400).json({ error });
+
     const { message } = composeMessage({
       campaign,
       step,
       contact,
-      threadMessageId: step.step_no > 1 ? `<preview.step1@${env.SENDING_DOMAIN}>` : null,
+      mailbox,
+      threadMessageId: step.step_no > 1 ? `<preview.step1@${mailbox.sending_domain}>` : null,
     });
     res.json({
       subject: message.subject,
@@ -318,15 +388,22 @@ campaignsRouter.post('/:id/test', validate(z.object({
     const step = steps.find((s) => s.step_no === req.body.stepNo) ?? steps[0];
     if (!step) return res.status(400).json({ error: 'Campaign has no steps' });
 
+    // Deliberately the campaign's own mailbox: a test that went out of a
+    // different account would prove nothing about the one that will actually
+    // send, which is the entire point of the button.
+    const { mailbox, error } = resolveCampaignMailbox(campaign);
+    if (error) return res.status(400).json({ error });
+
     const to = req.body.to ?? req.user.email;
     const { message } = composeMessage({
       campaign,
       step,
+      mailbox,
       contact: { ...(await sampleContact(campaign)), email: to },
     });
     message.subject = `[TEST] ${message.subject}`;
 
-    await (await getTransport()).sendMail(message);
+    await (await getTransport(mailbox)).sendMail(message);
     await logAction({ userId: req.user.id, action: 'campaign.test_send', entity: 'campaign', entityId: campaign.id, detail: { to } });
     res.json({ ok: true, sentTo: to });
   } catch (error) {
@@ -350,6 +427,11 @@ campaignsRouter.post('/:id/start', async (req, res, next) => {
     }
     if (!campaign.list_id) return res.status(400).json({ error: 'Select a contact list first' });
 
+    // Last gate before anything is queued: no mailbox, a deleted or
+    // deactivated one, or a From override the provider would rewrite.
+    const { mailbox, error: mailboxError } = resolveCampaignMailbox(campaign);
+    if (mailboxError) return res.status(400).json({ error: mailboxError });
+
     const steps = await getSteps(campaign.id);
     if (steps.length === 0) return res.status(400).json({ error: 'Campaign has no content' });
 
@@ -357,7 +439,9 @@ campaignsRouter.post('/:id/start', async (req, res, next) => {
       const lint = lintContent({
         subject: step.subject || campaign.subject,
         html: step.html_body || campaign.html_body,
-        sendingDomain: env.SENDING_DOMAIN,
+        // The sending mailbox's domain, not a process-wide one: the lint
+        // checks links against the domain the mail actually goes out from.
+        sendingDomain: mailbox.sending_domain,
         hasUnsubscribe: true,
         hasPostalAddress: env.postalAddressSet,
       });
@@ -401,7 +485,7 @@ campaignsRouter.post('/:id/start', async (req, res, next) => {
       // follow-ups and first touches share one code path and one set of limits.
       queued = await enrollContacts(campaign.id, recipients.map((c) => c.id));
     } else {
-      queued = await queueJobs(campaign.id, recipients, 1);
+      queued = await queueJobs(campaign.id, recipients, 1, campaign.tenant_id ?? 1, mailbox.id);
     }
 
     await setCampaignStatus(campaign.id, 'sending');
@@ -591,7 +675,7 @@ async function withDetail(campaign) {
     // Why the queue is or is not moving. Without this the page shows work
     // queued and nothing happening, with no way to tell that the send
     // window simply closed for the evening.
-    sender: await senderStatus(),
+    sender: await senderStatus(campaign.mailbox_id),
   };
 }
 

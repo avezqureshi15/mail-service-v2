@@ -1037,7 +1037,6 @@ button.step-tab.active:hover { background: var(--accent-dark); color: #fff; }
 .sidebar { transition: width .15s ease; position: relative; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; margin: 0 8px 20px; }
 .sidebar-head h1 { color: #fff; font-size: 15px; margin: 0; letter-spacing: .2px; }
-.sidebar-head .brand-short { display: none; }
 
 .sidebar-toggle {
   flex-shrink: 0; background: transparent; border: 1px solid #3a414b; color: #c9ced6;
@@ -1052,11 +1051,11 @@ button.step-tab.active:hover { background: var(--accent-dark); color: #fff; }
 .sidebar .user-details strong, .sidebar .user-details span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar .user button { display: flex; align-items: center; justify-content: center; gap: 8px; }
 
-/* Icon rail: labels and text hide, nav items centre on their icon. */
+/* Icon rail: the brand name and every label hide, leaving just the toggle
+   (centred on its own) and a column of icons. */
 .sidebar.collapsed { width: 64px; }
 .sidebar.collapsed .sidebar-head { justify-content: center; margin: 0 0 20px; }
 .sidebar.collapsed .brand-full { display: none; }
-.sidebar.collapsed .sidebar-head .brand-short { display: block; }
 .sidebar.collapsed nav a { justify-content: center; padding: 10px 0; }
 .sidebar.collapsed .nav-label,
 .sidebar.collapsed .user-details { display: none; }
@@ -1080,15 +1079,18 @@ button.step-tab.active:hover { background: var(--accent-dark); color: #fff; }
   }
   .mobile-topbar strong { font-size: 14.5px; }
 
+  /* The icon-rail preference is a desktop convenience. On a phone the
+     sidebar is already an overlay the user opens on demand, so it may as
+     well show the full thing rather than a second, smaller icon rail. */
   .sidebar, .sidebar.collapsed {
     position: fixed; inset: 0 auto 0 0; width: 230px; z-index: 50;
     transform: translateX(-100%); transition: transform .2s ease;
   }
   .sidebar.mobile-open { transform: translateX(0); }
+  .sidebar.collapsed .sidebar-head { justify-content: space-between; }
   .sidebar.collapsed .nav-label,
   .sidebar.collapsed .user-details,
   .sidebar.collapsed .brand-full { display: revert; }
-  .sidebar.collapsed .sidebar-head .brand-short { display: none; }
   .sidebar.collapsed nav a { justify-content: flex-start; padding: 8px 10px; }
   .sidebar.collapsed .user { flex-direction: column; align-items: stretch; }
   .sidebar.collapsed .user button { width: 100%; height: auto; padding: 5px 10px; }
@@ -1174,6 +1176,10 @@ button.step-tab.active:hover { background: var(--accent-dark); color: #fff; }
   width: 100%; padding: 19px 10px 8px; border: 1px solid var(--border);
   border-radius: 7px; font: inherit; background: #fff; color: var(--text);
 }
+/* Hidden until focused - the label rests exactly where the placeholder text
+   would otherwise sit, so showing both at once is just overlapping text. */
+.floating-field .floating-input::placeholder { color: var(--muted); opacity: 0; transition: opacity .1s ease; }
+.floating-field .floating-input:focus::placeholder { opacity: .6; }
 .floating-field .floating-label {
   position: absolute; left: 10px; top: 13px; margin: 0; font-weight: 500;
   color: var(--muted); font-size: 14px; pointer-events: none;

@@ -9,18 +9,22 @@ import connectPgSimple from 'connect-pg-simple';
 import { env } from './config/env.js';
 import { pool, migrate, closePool } from './db/index.js';
 import { loadSettings } from './db/repositories/settings.js';
+import { loadMailboxes, allMailboxes } from './db/repositories/mailboxes.js';
+import { ensureDefaultMailbox } from './db/seed-mailbox.js';
 import {
   loadUser, apiLimiter, notFound, errorHandler,
 } from './middleware/index.js';
 import { authRouter, usersRouter } from './routes/auth.js';
 import { contactsRouter, listsRouter, suppressionsRouter } from './routes/contacts.js';
 import { campaignsRouter } from './routes/campaigns.js';
+import { mailboxesRouter } from './routes/mailboxes.js';
 import { healthRouter, settingsRouter } from './routes/health.js';
 import { unsubscribeRouter } from './routes/unsubscribe.js';
 import { trackingRouter } from './routes/tracking.js';
 import { templatesRouter } from './routes/templates.js';
 import { predictorRouter } from './routes/predictor.js';
-import { startSender, stopSender } from './workers/sender.js';
+import { startSender, stopSender, drainSender } from './workers/sender.js';
+import { closeAllTransports } from './mail/transport.js';
 import { startSequencer, stopSequencer } from './workers/sequencer.js';
 import { startInboxPoller, stopInboxPoller } from './workers/inbox-poller.js';
 import { startDeliveryConfirmer, stopDeliveryConfirmer } from './workers/delivery-confirmer.js';
@@ -100,6 +104,7 @@ app.use('/api/contacts', contactsRouter);
 app.use('/api/lists', listsRouter);
 app.use('/api/suppressions', suppressionsRouter);
 app.use('/api/campaigns', campaignsRouter);
+app.use('/api/mailboxes', mailboxesRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/predictor', predictorRouter);
 app.use('/api/settings', settingsRouter);
@@ -133,16 +138,19 @@ async function start() {
   const applied = await migrate({ log: () => {} });
   if (applied > 0) console.log(`database: applied ${applied} migration(s)`);
 
-  await loadSettings();
+  // Before anything reads a mailbox and before any worker starts: migration
+  // 007 leaves every mailbox_id nullable so this can turn the .env mailbox
+  // into a row and attribute existing campaigns, jobs, counters and the IMAP
+  // read position to it. A deployment that was sending keeps sending.
+  await ensureDefaultMailbox();
+
+  await Promise.all([loadSettings(), loadMailboxes()]);
 
   server = app.listen(env.PORT, async () => {
     console.log(`\nmail-service-v2 listening on http://localhost:${env.PORT}`);
     console.log(`  database       : ${describeDatabase()}`);
-    console.log(`  sending domain : ${env.SENDING_DOMAIN}`);
-    console.log(`  from           : ${env.MAIL_FROM_NAME} <${env.MAIL_FROM_ADDRESS}>`);
-    console.log(`  smtp           : ${env.SMTP_HOST}:${env.SMTP_PORT} (${env.smtpSecure ? 'implicit TLS' : 'STARTTLS'})`);
     console.log(`  tracking       : ${env.trackingEnabled ? env.TRACKING_DOMAIN : 'disabled'}`);
-    console.log(`  imap           : ${env.IMAP_ENABLED ? `${env.IMAP_HOST}:${env.IMAP_PORT}` : 'disabled'}`);
+    describeMailboxes();
 
     if (await countUsers() === 0) {
       console.log('\n  No users yet. Create the first administrator with: npm run seed:admin\n');
@@ -153,6 +161,30 @@ async function start() {
     startInboxPoller();
     startDeliveryConfirmer();
   });
+}
+
+/**
+ * One line per sending mailbox. Replaces the single SMTP line that used to
+ * print env.SMTP_HOST, which is now only a seed source.
+ */
+function describeMailboxes() {
+  const mailboxes = allMailboxes();
+
+  if (mailboxes.length === 0) {
+    console.log('  mailboxes      : none - add one in Settings > Mailboxes before sending');
+    return;
+  }
+
+  console.log(`  mailboxes      : ${mailboxes.length}`);
+  for (const mailbox of mailboxes) {
+    const flags = [
+      mailbox.is_default ? 'default' : null,
+      mailbox.is_active ? null : 'inactive',
+      mailbox.imap_enabled ? null : 'no IMAP',
+    ].filter(Boolean);
+    const suffix = flags.length ? `  [${flags.join(', ')}]` : '';
+    console.log(`    - ${mailbox.label} <${mailbox.from_email}> via ${mailbox.smtp_host}${suffix}`);
+  }
 }
 
 /** Host and schema only - never the connection string, which has the password. */
@@ -176,8 +208,19 @@ async function shutdown(signal) {
   stopInboxPoller();
   stopDeliveryConfirmer();
 
+  // Order matters. A loop mid-claim holds a pooled database connection, so
+  // closing the pool before it finishes turns a clean shutdown into a burst
+  // of connection errors - and exiting mid-sendMail can leave a job marked
+  // 'sending' that the stale-lock sweep later requeues, sending it twice.
+  await drainSender();
+
+  // Mandatory, not tidy: a pooled SMTP connection with a live socket keeps
+  // the event loop alive, which turns a clean exit into a hang. This was
+  // never called at all while there was one global pool.
+  await closeAllTransports().catch(() => {});
+
   // Do not hang forever if a connection refuses to close.
-  const giveUp = setTimeout(() => process.exit(0), 10_000);
+  const giveUp = setTimeout(() => process.exit(0), 15_000);
   giveUp.unref();
 
   await new Promise((resolve) => (server ? server.close(resolve) : resolve()));

@@ -3,13 +3,15 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { queryOne, execute } from '../db/index.js';
 import { checkDomain } from '../lib/dns-check.js';
+import { latestDomainHealth, recordDomainHealth } from '../db/repositories/domain-health.js';
+import { activeMailboxes } from '../db/repositories/mailboxes.js';
 import { getSettings, setSettings, warmupStage, DEFAULT_SETTINGS } from '../db/repositories/settings.js';
 import { recentDeliveryHealth } from '../db/repositories/jobs.js';
 import { countByStatus } from '../db/repositories/contacts.js';
 import { countSuppressions } from '../db/repositories/suppressions.js';
 import { listCampaigns } from '../db/repositories/campaigns.js';
 import { recentAudit, logAction } from '../db/repositories/users.js';
-import { senderStatus } from '../workers/sender.js';
+import { senderStatus, allSenderStatus } from '../workers/sender.js';
 import { scanInbox } from '../workers/inbox-poller.js';
 import { requireAuth, requireAdmin, validate } from '../middleware/index.js';
 
@@ -28,7 +30,7 @@ healthRouter.get('/dashboard', async (_req, res, next) => {
     // Five independent reads, so they go out together rather than one after
     // another - the difference is noticeable now each is a network round trip.
     const [cached, delivery, contacts, suppressions, campaigns] = await Promise.all([
-      queryOne('SELECT * FROM domain_health WHERE id = 1'),
+      latestDomainHealth(),
       recentDeliveryHealth(24),
       countByStatus(),
       countSuppressions(),
@@ -46,6 +48,9 @@ healthRouter.get('/dashboard', async (_req, res, next) => {
         }
         : null,
       sender: await senderStatus(),
+      // One row per mailbox: with several senders, a single aggregate hides
+      // the one that is actually stalled.
+      senders: await allSenderStatus(),
       warmup: warmupStage(settings),
       sequenceWaitUnit: settings.sequenceWaitUnit,
       delivery,
@@ -57,7 +62,10 @@ healthRouter.get('/dashboard', async (_req, res, next) => {
         fromAddress: env.MAIL_FROM_ADDRESS,
         provider: { id: env.provider.id, label: env.provider.label, dailyLimit: env.provider.dailyLimit, note: env.provider.dailyLimitNote },
         trackingConfigured: env.trackingEnabled,
-        imapEnabled: env.IMAP_ENABLED,
+        // True when at least one mailbox watches its inbox - the env flag
+        // is only a seed value now.
+        imapEnabled: activeMailboxes().some((m) => m.imap_enabled),
+        mailboxCount: activeMailboxes().length,
       },
     });
   } catch (error) {
@@ -69,14 +77,7 @@ healthRouter.get('/dashboard', async (_req, res, next) => {
 healthRouter.post('/domain-check', async (_req, res, next) => {
   try {
     const result = await checkDomain(env.SENDING_DOMAIN, env.DKIM_SELECTOR, { provider: env.provider });
-    await execute(
-      `INSERT INTO domain_health (id, spf_ok, dkim_ok, dmarc_ok, detail, checked_at)
-       VALUES (1, $1, $2, $3, $4::jsonb, now())
-       ON CONFLICT (id) DO UPDATE SET
-         spf_ok = excluded.spf_ok, dkim_ok = excluded.dkim_ok, dmarc_ok = excluded.dmarc_ok,
-         detail = excluded.detail, checked_at = excluded.checked_at`,
-      [result.spf.ok, result.dkim.ok, result.dmarc.ok, JSON.stringify(result)],
-    );
+    await recordDomainHealth(env.SENDING_DOMAIN, env.DKIM_SELECTOR, result);
     res.json(result);
   } catch (error) {
     next(error);

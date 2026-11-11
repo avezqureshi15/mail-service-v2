@@ -43,16 +43,15 @@ export default function CampaignEditor() {
   // So the wait field can say "minutes" while sequence testing mode is on,
   // rather than claiming days and sending three minutes later.
   const [waitUnit, setWaitUnit] = useState('days');
-  // Gmail only accepts a From address that is the authenticated mailbox
-  // itself or one of its verified aliases - a per-campaign override would
-  // just fail (or get silently rewritten) at send time, so the wizard shows
-  // this read-only rather than letting it be typed.
-  const [configuredFromAddress, setConfiguredFromAddress] = useState('');
+  // The sender is chosen per campaign now, so the wizard needs the whole
+  // list rather than the one address the server used to be pinned to.
+  const [mailboxes, setMailboxes] = useState([]);
   const [form, setForm] = useState({
     name: '',
     listId: '',
     categoryId: '',
     subCategoryId: '',
+    mailboxId: '',
     fromName: '',
     replyTo: '',
     trackingEnabled: false,
@@ -74,15 +73,21 @@ export default function CampaignEditor() {
   useEffect(() => {
     (async () => {
       try {
-        const [listData, dashboard, categoryData] = await Promise.all([
+        const [listData, dashboard, categoryData, mailboxData] = await Promise.all([
           api.get('/lists'),
           api.get('/dashboard'),
           api.get('/campaigns/categories'),
+          api.get('/mailboxes'),
         ]);
         setLists(listData.lists);
         setTrackingAvailable(dashboard.config.trackingConfigured);
         setWaitUnit(dashboard.sequenceWaitUnit ?? 'days');
-        setConfiguredFromAddress(dashboard.config?.fromAddress ?? '');
+        // Only mailboxes that can actually send are offered.
+        const sendable = (mailboxData.mailboxes ?? []).filter((m) => m.is_active);
+        setMailboxes(sendable);
+        // A new campaign starts on the default mailbox, or on the only one
+        // there is - picking from a list of one is busywork.
+        const preselect = sendable.find((m) => m.is_default) ?? (sendable.length === 1 ? sendable[0] : null);
         setCategories(categoryData.categories ?? []);
         const defaultCategoryId = (categoryData.categories ?? [])
           .find((c) => c.name.toLowerCase() === 'uncategorised')?.id
@@ -96,6 +101,7 @@ export default function CampaignEditor() {
             listId: campaign.list_id ?? '',
             categoryId: resolvedCategoryId,
             subCategoryId: String(campaign.sub_category_id ?? ''),
+            mailboxId: String(campaign.mailbox_id ?? ''),
             fromName: campaign.from_name ?? '',
             replyTo: campaign.reply_to ?? '',
             trackingEnabled: Boolean(campaign.tracking_enabled),
@@ -115,8 +121,13 @@ export default function CampaignEditor() {
           }
         } else {
           // New campaign: preselect the default category so it always belongs
-          // to one from the moment it is created.
-          setForm((f) => ({ ...f, categoryId: String(defaultCategoryId) }));
+          // to one from the moment it is created, and the default mailbox so
+          // picking from a list of one is not busywork.
+          setForm((f) => ({
+            ...f,
+            categoryId: String(defaultCategoryId),
+            mailboxId: f.mailboxId || String(preselect?.id ?? ''),
+          }));
           if (defaultCategoryId) {
             const subData = await api.get(`/campaigns/subcategories/${defaultCategoryId}`);
             setSubCategories(subData.subCategories ?? []);
@@ -279,10 +290,11 @@ export default function CampaignEditor() {
       subject: steps[0]?.subject ?? '',
       preheader: steps[0]?.preheader ?? '',
       htmlBody: steps[0]?.htmlBody ?? '',
+      mailboxId: form.mailboxId ? Number(form.mailboxId) : null,
       fromName: form.fromName,
-      // Always empty: Gmail only accepts the configured mailbox (or a
-      // verified alias) as the From address, so there is no per-campaign
-      // override to send - compose.js falls back to env.MAIL_FROM_ADDRESS.
+      // Still empty: the From address comes from the chosen mailbox. An
+      // override is only legal where the provider permits it, and the server
+      // refuses it at start time where it does not.
       fromEmail: '',
       replyTo: form.replyTo,
       trackingEnabled: form.trackingEnabled,
@@ -374,7 +386,7 @@ export default function CampaignEditor() {
   }
 
   const firstStep = steps[0] ?? BLANK_STEP;
-  const setupComplete = Boolean(form.name.trim());
+  const setupComplete = Boolean(form.name.trim() && form.mailboxId);
   // A follow-up step with no subject of its own inherits the first touch's
   // (see compose.js's `step.subject || campaign.subject`) - that's the normal
   // shape of a real sequence, not an incomplete one, so only step 0's subject
@@ -389,7 +401,8 @@ export default function CampaignEditor() {
 
   const checklist = [
     { label: 'Audience list selected', done: Boolean(form.listId) },
-    { label: 'Campaign name set', done: setupComplete },
+    { label: 'Campaign name set', done: Boolean(form.name.trim()) },
+    { label: 'Sending mailbox selected', done: Boolean(form.mailboxId) },
     { label: 'Subject line present', done: Boolean(firstStep.subject.trim()) },
     { label: 'Email body present', done: emailComplete },
   ];
@@ -442,7 +455,7 @@ export default function CampaignEditor() {
               addSubCategory={addSubCategory}
               changeCategory={changeCategory}
               trackingAvailable={trackingAvailable}
-              configuredFromAddress={configuredFromAddress}
+              mailboxes={mailboxes}
             />
           </div>
         )}
@@ -487,7 +500,7 @@ export default function CampaignEditor() {
               form={form}
               firstStep={firstStep}
               selectedList={selectedList}
-              configuredFromAddress={configuredFromAddress}
+              selectedMailbox={mailboxes.find((m) => String(m.id) === String(form.mailboxId)) ?? null}
               checklist={checklist}
               readyToLaunch={readyToLaunch}
               busy={busy}

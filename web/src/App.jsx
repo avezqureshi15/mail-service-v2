@@ -132,10 +132,7 @@ function Sidebar({
   return (
     <aside className={`sidebar${collapsed ? ' collapsed' : ''}${mobileOpen ? ' mobile-open' : ''}`}>
       <div className="sidebar-head">
-        <h1>
-          <span className="brand-full">Mail Service</span>
-          <span className="brand-short">MS</span>
-        </h1>
+        <h1 className="brand-full">Mail Service</h1>
         <button
           type="button"
           className="sidebar-toggle"

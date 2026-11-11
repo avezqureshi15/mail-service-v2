@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, formatDate } from '../lib/api.js';
 import { useToast } from '../lib/toast.jsx';
+import MailboxesTab from '../components/MailboxesTab.jsx';
 
 export default function Settings({ user }) {
   const [tab, setTab] = useState('sending');
@@ -13,7 +14,7 @@ export default function Settings({ user }) {
           <h2>Settings</h2>
           <p>
             {isAdmin
-              ? 'Pacing and safety limits apply to every campaign, including sequence follow-ups.'
+              ? 'Sending mailboxes, plus the pacing and safety limits that apply to every campaign.'
               : 'Read-only. Ask an administrator to change these.'}
           </p>
         </div>
@@ -22,6 +23,9 @@ export default function Settings({ user }) {
       <div className="preview-tabs">
         <button type="button" className={tab === 'sending' ? 'active' : ''} onClick={() => setTab('sending')}>
           Sending
+        </button>
+        <button type="button" className={tab === 'mailboxes' ? 'active' : ''} onClick={() => setTab('mailboxes')}>
+          Mailboxes
         </button>
         {isAdmin && (
           <button type="button" className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>
@@ -36,6 +40,7 @@ export default function Settings({ user }) {
       </div>
 
       {tab === 'sending' && <SendingSettings isAdmin={isAdmin} />}
+      {tab === 'mailboxes' && <MailboxesTab isAdmin={isAdmin} />}
       {tab === 'users' && isAdmin && <Users currentUser={user} />}
       {tab === 'audit' && isAdmin && <Audit />}
     </>

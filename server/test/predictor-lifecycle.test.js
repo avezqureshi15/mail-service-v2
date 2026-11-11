@@ -5,7 +5,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { simpleParser } from 'mailparser';
 
-import { setupTestSchema, teardownTestSchema } from './helpers/test-db.js';
+import { setupTestSchema, teardownTestSchema, makeTestMailbox } from './helpers/test-db.js';
 import { env } from '../src/config/env.js';
 import { query, queryOne, execute } from '../src/db/index.js';
 import { upsertContact } from '../src/db/repositories/contacts.js';
@@ -19,7 +19,20 @@ import { rolloutStateFor, gateResults } from '../src/lib/rollout.js';
 import { confirmQuietDeliveries } from '../src/workers/delivery-confirmer.js';
 import { handleBounce, handleReply } from '../src/workers/inbox-poller.js';
 
-before(setupTestSchema);
+let watchedMailbox;
+
+before(async () => {
+  await setupTestSchema();
+  // Confirmation is only valid for a mailbox that actually watches its
+  // inbox - silence from one with IMAP off proves nothing.
+  // The sending domain has to match the Message-IDs this file builds, or the
+  // poller's pre-filter discards them before the job lookup ever runs.
+  watchedMailbox = await makeTestMailbox({
+    imapEnabled: true,
+    isDefault: true,
+    sendingDomain: env.SENDING_DOMAIN,
+  });
+});
 after(teardownTestSchema);
 
 /**
@@ -88,9 +101,9 @@ async function sendTo(email, hoursAgo = 72) {
   const messageId = `<lc.${seq}.${Math.random().toString(36).slice(2)}@${env.SENDING_DOMAIN}>`;
 
   await execute(
-    `INSERT INTO send_jobs (campaign_id, contact_id, step_no, recipient_domain, status, message_id, sent_at)
-     VALUES ($1, $2, 1, $3, 'sent', $4, now() - make_interval(hours => $5))`,
-    [campaignId, contact.id, email.split('@')[1], messageId, hoursAgo],
+    `INSERT INTO send_jobs (campaign_id, contact_id, step_no, recipient_domain, status, message_id, sent_at, mailbox_id)
+     VALUES ($1, $2, 1, $3, 'sent', $4, now() - make_interval(hours => $5), $6)`,
+    [campaignId, contact.id, email.split('@')[1], messageId, hoursAgo, watchedMailbox.id],
   );
   return { contact, campaignId, messageId };
 }

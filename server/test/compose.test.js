@@ -23,6 +23,22 @@ const contact = {
   custom_fields: JSON.stringify({ city: 'Pune' }),
 };
 
+// Deliberately NOT env.SENDING_DOMAIN: the Message-ID must follow the
+// mailbox that sends, and asserting against a distinct domain is what proves
+// it stopped following the old process-wide value.
+const mailbox = {
+  id: 1,
+  label: 'Test mailbox',
+  from_name: 'Mailbox Default',
+  from_email: 'sender@mailbox.test',
+  reply_to: '',
+  sending_domain: 'mailbox.test',
+  smtp_host: 'smtp.mailbox.test',
+  smtp_port: 465,
+  smtp_user: 'sender@mailbox.test',
+  is_active: true,
+};
+
 const campaign = {
   id: 3,
   subject: 'Quick question, {{first_name}}',
@@ -57,7 +73,7 @@ test('sanitizer strips script, iframe and event handlers', () => {
 });
 
 test('composed message has a real plaintext part and both unsubscribe headers', () => {
-  const { message, messageId } = composeMessage({ campaign, step, contact });
+  const { message, messageId } = composeMessage({ campaign, step, contact, mailbox });
 
   assert.ok(message.text.length > 20, 'plaintext part must not be empty');
   assert.match(message.text, /Hi Dana at Acme in Pune/);
@@ -69,13 +85,13 @@ test('composed message has a real plaintext part and both unsubscribe headers', 
   // The Message-ID must sit on the configured sending domain, whatever that
   // is - bounce and reply matching both key off recognising it later.
   assert.ok(
-    messageId.endsWith(`@${env.SENDING_DOMAIN}>`),
-    `Message-ID ${messageId} should be on ${env.SENDING_DOMAIN}`,
+    messageId.endsWith(`@${mailbox.sending_domain}>`),
+    `Message-ID ${messageId} should be on ${mailbox.sending_domain}`,
   );
 });
 
 test('footer with unsubscribe link and postal address is injected automatically', () => {
-  const { message, unsubscribeUrl } = composeMessage({ campaign, step, contact });
+  const { message, unsubscribeUrl } = composeMessage({ campaign, step, contact, mailbox });
   assert.ok(message.html.includes(unsubscribeUrl), 'visible unsubscribe link missing');
   assert.match(message.html, /Unsubscribe/);
   // CAN-SPAM requires a postal address in every commercial message, and it is
@@ -88,6 +104,7 @@ test('footer with unsubscribe link and postal address is injected automatically'
 
 test('preheader is injected as hidden preview text, merge fields and all', () => {
   const { message } = composeMessage({
+    mailbox,
     campaign: { ...campaign, preheader: 'A note for {{first_name}} at {{company}}' },
     step,
     contact,
@@ -100,19 +117,21 @@ test('a step-level preheader overrides the campaign default', () => {
     campaign: { ...campaign, preheader: 'Campaign default' },
     step: { ...step, preheader: 'Step-specific preview' },
     contact,
+    mailbox,
   });
   assert.match(message.html, /Step-specific preview/);
   assert.doesNotMatch(message.html, /Campaign default/);
 });
 
 test('no preheader markup when neither campaign nor step set one', () => {
-  const { message } = composeMessage({ campaign, step, contact });
+  const { message } = composeMessage({ campaign, step, contact, mailbox });
   assert.doesNotMatch(message.html, /mso-hide:all/);
 });
 
 test('follow-up steps thread onto the original message', () => {
   const { message } = composeMessage({
     campaign,
+    mailbox,
     step: { subject: 'Following up', html_body: '<p>Bumping this.</p>' },
     contact,
     threadMessageId: '<original@example.com>',
@@ -122,7 +141,7 @@ test('follow-up steps thread onto the original message', () => {
 });
 
 test('no tracking pixel or rewritten links when tracking is off', () => {
-  const { message } = composeMessage({ campaign, step, contact });
+  const { message } = composeMessage({ campaign, step, contact, mailbox });
   assert.doesNotMatch(message.html, /\/t\/o\//, 'open pixel must be absent');
   assert.doesNotMatch(message.html, /\/t\/c\//, 'click rewriting must be absent');
   assert.match(message.html, /href="https:\/\/acme\.test\/demo"/);

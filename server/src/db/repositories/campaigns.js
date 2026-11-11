@@ -14,6 +14,7 @@ export async function createCampaign({
   replyTo = '',
   trackingEnabled = false,
   isSequence = false,
+  mailboxId = null,
   createdBy = null,
   tenantId = 1,
 }) {
@@ -25,11 +26,11 @@ export async function createCampaign({
   const row = await queryOne(
     `INSERT INTO campaigns
        (tenant_id, name, list_id, category_id, sub_category_id, subject, preheader, html_body,
-        from_name, from_email, reply_to, tracking_enabled, is_sequence, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        from_name, from_email, reply_to, tracking_enabled, is_sequence, mailbox_id, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
      RETURNING id`,
     [tenantId, name, listId, resolvedCategoryId, subCategoryId, subject, preheader, htmlBody,
-      fromName, fromEmail, replyTo, Boolean(trackingEnabled), Boolean(isSequence), createdBy],
+      fromName, fromEmail, replyTo, Boolean(trackingEnabled), Boolean(isSequence), mailboxId, createdBy],
   );
 
   return getCampaign(row.id, tenantId);
@@ -48,8 +49,50 @@ export function getCampaign(id, tenantId = 1) {
 
 const UPDATABLE = new Set([
   'name', 'list_id', 'category_id', 'sub_category_id', 'subject', 'preheader', 'html_body', 'from_name',
-  'from_email', 'reply_to', 'tracking_enabled', 'is_sequence', 'scheduled_at',
+  'from_email', 'reply_to', 'tracking_enabled', 'is_sequence', 'scheduled_at', 'mailbox_id',
 ]);
+
+/**
+ * Moves a campaign to a different mailbox, taking its still-queued jobs with
+ * it.
+ *
+ * Jobs carry their own mailbox_id, stamped when they were queued - so without
+ * this, reassigning a campaign would leave everything already in the queue
+ * going out of the old account, which is the trap that stamping buys its
+ * other advantages with.
+ *
+ * Rows already in 'sending' are deliberately left alone: a loop holds them,
+ * and the message may be on the wire.
+ */
+/**
+ * Pauses only the campaigns that send from one mailbox.
+ *
+ * Used when that mailbox's domain authentication is failing. The global
+ * breaker in the janitor still pauses everything, because a bounce-rate
+ * spike is a domain-wide problem - but one mailbox's missing DKIM selector
+ * says nothing about the others.
+ */
+export function pauseCampaignsForMailbox(mailboxId, reason) {
+  return execute(
+    `UPDATE campaigns SET status = 'paused', pause_reason = $1, updated_at = now()
+      WHERE status = 'sending' AND mailbox_id = $2`,
+    [reason, mailboxId],
+  );
+}
+
+export function reassignMailbox(campaignId, mailboxId, tenantId = 1) {
+  return transaction(async (tx) => {
+    await tx.execute(
+      'UPDATE campaigns SET mailbox_id = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3',
+      [mailboxId, campaignId, tenantId],
+    );
+    const moved = await tx.execute(
+      "UPDATE send_jobs SET mailbox_id = $1 WHERE campaign_id = $2 AND status = 'queued'",
+      [mailboxId, campaignId],
+    );
+    return moved;
+  });
+}
 
 export async function updateCampaign(id, patch, tenantId = 1) {
   const entries = Object.entries(patch).filter(([key]) => UPDATABLE.has(key));
@@ -352,7 +395,10 @@ export function exitEnrollment({ campaignId = null, contactId, reason }) {
  */
 export function dueEnrollments(limit = 200) {
   return query(
-    `SELECT e.*, c.tenant_id, c.email, c.status AS contact_status
+    // k.mailbox_id comes along so the sequencer can stamp the follow-up
+    // without a second query per enrollment. It is the campaign's CURRENT
+    // mailbox, which is what a follow-up should go out from.
+    `SELECT e.*, c.tenant_id, c.email, c.status AS contact_status, k.mailbox_id
        FROM sequence_enrollments e
        JOIN contacts  c ON c.id = e.contact_id
        JOIN campaigns k ON k.id = e.campaign_id
