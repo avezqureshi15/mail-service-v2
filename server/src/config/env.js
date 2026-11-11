@@ -88,6 +88,35 @@ const schema = z
 
     SEED_ADMIN_EMAIL: z.string().trim().email().optional().or(z.literal('')),
     SEED_ADMIN_PASSWORD: z.string().optional(),
+
+    // --- Name intelligence (optional) --------------------------------------
+    // Used by the Mail Predictor for two narrow language jobs: deciding which
+    // word in a name is the surname, and suggesting the short forms a mailbox
+    // might use. It never sees a domain and never produces an address.
+    //
+    // Leave LLM_API_KEY unset and the predictor runs on rules alone - the
+    // feature degrades, nothing breaks.
+    LLM_API_KEY: z.string().trim().optional().or(z.literal('')),
+    LLM_BASE_URL: z.string().trim().url().default('https://api.deepseek.com'),
+    LLM_MODEL: z.string().trim().default('deepseek-flash'),
+    // DeepSeek defaults to 'high', which on a task this small is slow enough
+    // to hit the timeout. Splitting a name needs no deliberation. Blank it
+    // for a provider that rejects the field.
+    LLM_EFFORT: z.enum(['low', 'high', 'max', '']).default('low'),
+    LLM_TIMEOUT_MS: z.coerce.number().int().min(1000).max(180000).default(60000),
+    // Names per request. Measured: this model spends ~500 reasoning tokens
+    // per name, so a very large batch is slow and risks hitting the output
+    // ceiling, while one-per-call wastes the round trip. Ten is the balance.
+    LLM_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(10),
+    // Batches in flight at once.
+    //
+    // Measured on deepseek-flash, not assumed: two concurrent batches of
+    // five took 34.8s, the same two run one after the other took 23.0s.
+    // The endpoint serialises the work anyway, so asking for parallelism
+    // only adds overhead - and the extra pressure made one batch exhaust
+    // its output budget. Throughput is about 2.5s per name either way.
+    // Raise this only if a measurement on your own key disagrees.
+    LLM_CONCURRENCY: z.coerce.number().int().min(1).max(10).default(1),
   })
   // IMAP drives both bounce suppression and sequence reply-exit. If it is on,
   // it must be fully configured or those two features fail silently.
@@ -128,6 +157,8 @@ export const env = Object.freeze({
   // address" in the footer of every message.
   postalAddressSet: !/CHANGE[_-]?ME/i.test(raw.COMPANY_POSTAL_ADDRESS),
   trackingEnabled: Boolean(raw.TRACKING_DOMAIN),
+  // Presence of a key is the whole feature flag. Nothing else needs setting.
+  llmEnabled: Boolean(raw.LLM_API_KEY),
   // Implicit TLS on 465; STARTTLS is upgraded and required on anything else.
   smtpSecure: raw.SMTP_PORT === 465,
   // The active preset. Deriving it once here keeps the DNS checker, the

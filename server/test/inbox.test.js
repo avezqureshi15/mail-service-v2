@@ -178,8 +178,10 @@ test('soft bounces are distinguished from hard ones', () => {
   assert.equal(classifyBounce({ smtpCode: '452' }).type, 'soft');
   assert.equal(classifyBounce({ text: 'mailbox is full, over quota' }).type, 'soft');
   assert.equal(classifyBounce({ text: 'no such user here' }).type, 'hard');
-  // An out-of-office is not a failure and must not suppress anyone.
-  assert.equal(classifyBounce({ text: 'I am out of office until Monday' }).type, 'soft');
+  // An out-of-office is not a failure and must not suppress anyone. It used
+  // to be filed as a soft bounce, which counted towards the soft-bounce
+  // limit and could eventually suppress someone who had gone on holiday.
+  assert.equal(classifyBounce({ text: 'I am out of office until Monday' }).type, 'auto_reply');
 });
 
 test('a feedback-loop complaint is recognised', async () => {

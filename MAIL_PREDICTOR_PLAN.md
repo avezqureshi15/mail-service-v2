@@ -426,3 +426,15 @@ dependency. They can be tested entirely from `node --test`.
 - **Name collisions.** Two R. Sharmas means one is `rsharma2@` and no pattern
   logic will say which. Currently unsolved, and probably unsolvable without
   verification.
+- **Names written in a non-Latin script.** They parse correctly now, but an
+  address needs Latin characters, so predicting one would mean
+  transliterating - producing a word the operator never supplied. The model
+  guard in `name-intelligence.js` refuses exactly that, on purpose: it is the
+  rule that stops a hallucinated surname reaching a mailbox. Relaxing it for
+  transliteration only is possible but is a real trade, so those rows are
+  reported as unbuildable instead.
+- **Retiring a format does not yet propose the next one.** Two hard bounces
+  drop a format, and the company then reads as unknown rather than falling
+  back to the next-ranked candidate. Two departures therefore look exactly
+  like a wrong format, and a fresh correct seed cannot currently clear an old
+  rejection count.

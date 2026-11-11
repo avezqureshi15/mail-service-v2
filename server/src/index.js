@@ -19,9 +19,11 @@ import { healthRouter, settingsRouter } from './routes/health.js';
 import { unsubscribeRouter } from './routes/unsubscribe.js';
 import { trackingRouter } from './routes/tracking.js';
 import { templatesRouter } from './routes/templates.js';
+import { predictorRouter } from './routes/predictor.js';
 import { startSender, stopSender } from './workers/sender.js';
 import { startSequencer, stopSequencer } from './workers/sequencer.js';
 import { startInboxPoller, stopInboxPoller } from './workers/inbox-poller.js';
+import { startDeliveryConfirmer, stopDeliveryConfirmer } from './workers/delivery-confirmer.js';
 import { countUsers } from './db/repositories/users.js';
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -99,6 +101,7 @@ app.use('/api/lists', listsRouter);
 app.use('/api/suppressions', suppressionsRouter);
 app.use('/api/campaigns', campaignsRouter);
 app.use('/api/templates', templatesRouter);
+app.use('/api/predictor', predictorRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api', healthRouter);
 
@@ -148,6 +151,7 @@ async function start() {
     startSender();
     startSequencer();
     startInboxPoller();
+    startDeliveryConfirmer();
   });
 }
 
@@ -170,6 +174,7 @@ async function shutdown(signal) {
   stopSender();
   stopSequencer();
   stopInboxPoller();
+  stopDeliveryConfirmer();
 
   // Do not hang forever if a connection refuses to close.
   const giveUp = setTimeout(() => process.exit(0), 10_000);

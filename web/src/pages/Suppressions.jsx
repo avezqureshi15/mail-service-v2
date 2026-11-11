@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, formatDate } from '../lib/api.js';
+import { useToast } from '../lib/toast.jsx';
 
 const REASON_LABELS = {
   unsubscribed: 'Unsubscribed',
@@ -11,12 +12,12 @@ const REASON_LABELS = {
 };
 
 export default function Suppressions() {
+  const toast = useToast();
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState('');
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
 
   async function load() {
     try {
@@ -36,26 +37,26 @@ export default function Suppressions() {
   async function add(event) {
     event.preventDefault();
     setError('');
-    setNotice('');
     try {
       await api.post('/suppressions', { email });
-      setNotice(`${email} will no longer receive any campaign.`);
+      toast.success(`${email} will no longer receive any campaign.`);
       setEmail('');
       load();
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     }
   }
 
   async function remove(row) {
     setError('');
-    setNotice('');
     try {
       await api.del(`/suppressions/${row.id}`);
-      setNotice(`${row.email} removed from the suppression list.`);
+      toast.success(`${row.email} removed from the suppression list.`);
       load();
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     }
   }
 
@@ -71,7 +72,6 @@ export default function Suppressions() {
         </div>
       </div>
 
-      {notice && <div className="alert success">{notice}</div>}
       {error && <div className="alert error">{error}</div>}
 
       <div className="card">

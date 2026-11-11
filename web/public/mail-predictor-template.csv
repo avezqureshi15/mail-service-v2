@@ -1,0 +1,6 @@
+company_domain,person_name,seed_email,seed_person_name,company_name,observation,role_examples
+apex.example,Rajesh Kumar Sharma,,,Apex Solutions,you've opened four backend roles in Bangalore since September,backend engineers
+globex.example,Anna Smith,jdoe@globex.example,John Doe,Globex Systems,you're staffing a new data platform team,data engineers and analysts
+globex.example,Brian Wong,,,Globex Systems,you're staffing a new data platform team,data engineers and analysts
+globex.example,Kevin O'Brien,,,Globex Systems,your careers page lists nine open engineering roles,platform engineers
+northwind.example,Carlos Ruiz,maria@northwind.example,Maria Lopez,Northwind Labs,you've been hiring QA contractors through three agencies,QA testers

@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, formatDate } from '../lib/api.js';
+import { useToast } from '../lib/toast.jsx';
 
 /**
  * Deliverability health is the first thing on the page, because it is the
  * thing that decides whether anything else works.
  */
 export default function Dashboard() {
+  const toast = useToast();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(false);
@@ -31,8 +33,10 @@ export default function Dashboard() {
     try {
       await api.post('/domain-check');
       await load();
+      toast.success('Domain check complete.');
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     } finally {
       setChecking(false);
     }

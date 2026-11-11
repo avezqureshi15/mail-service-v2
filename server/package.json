@@ -16,7 +16,10 @@
     "dns:plan": "node scripts/dns-plan.js",
     "setup": "node scripts/setup.js",
     "preflight": "node scripts/preflight.js",
-    "diagnose:smtp": "node scripts/diagnose-smtp.js"
+    "diagnose:smtp": "node scripts/diagnose-smtp.js",
+    "patterns:backfill": "node scripts/backfill-patterns.js",
+    "test:names": "node scripts/test-name-model.js",
+    "patterns:backtest": "node scripts/backtest-patterns.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

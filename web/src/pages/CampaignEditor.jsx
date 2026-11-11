@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { useToast } from '../lib/toast.jsx';
 import WizardHeader from '../components/campaign-wizard/WizardHeader.jsx';
 import WizardStepper from '../components/campaign-wizard/WizardStepper.jsx';
 import StepSetupAudience from '../components/campaign-wizard/StepSetupAudience.jsx';
@@ -15,6 +16,7 @@ const BLANK_STEP = {
 export default function CampaignEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const toast = useToast();
   const editing = Boolean(id);
 
   // A fresh campaign starts locked to step 1; an existing draft already has
@@ -305,11 +307,13 @@ export default function CampaignEditor() {
       const result = editing
         ? await api.put(`/campaigns/${id}`, payload)
         : await api.post('/campaigns', payload);
+      toast.success(editing ? 'Draft saved' : 'Campaign created');
       if (!editing) {
         navigate(`/campaigns/${result.campaign.id}/edit`, { replace: true });
       }
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     } finally {
       setBusy(false);
     }
@@ -325,9 +329,11 @@ export default function CampaignEditor() {
         ? await api.put(`/campaigns/${id}`, payload)
         : await api.post('/campaigns', payload);
       await api.post(`/campaigns/${result.campaign.id}/start`);
+      toast.success('Campaign started sending');
       navigate(`/campaigns/${result.campaign.id}`);
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
       if (err.details) setBlockers(err.details);
     } finally {
       setBusy(false);

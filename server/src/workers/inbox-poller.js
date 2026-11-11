@@ -7,6 +7,11 @@ import { suppress } from '../db/repositories/suppressions.js';
 import { setStatusByEmail, findByEmail } from '../db/repositories/contacts.js';
 import { exitEnrollment } from '../db/repositories/campaigns.js';
 import { findJobByMessageId } from '../db/repositories/jobs.js';
+import {
+  predictionForEmail, recordPredictionEvent, refreshPredictionOutcome,
+  confirmPattern, rejectPattern,
+} from '../db/repositories/predictions.js';
+import { classifyBounceReason } from '../lib/bounce-reason.js';
 import { connectionTargetFor } from '../lib/resolve-host.js';
 import { applyUnsubscribe } from '../lib/apply-unsubscribe.js';
 
@@ -76,40 +81,13 @@ async function findOurMessageId(...sources) {
 // --- Bounce classification -------------------------------------------------
 
 /**
- * Prefers the machine-readable DSN status over scraping the human-readable
- * text, falling back to the SMTP reply code and then to well-known phrases.
+ * Kept as a thin alias so existing callers and tests keep working. The
+ * classification itself lives in `lib/bounce-reason.js`, which is pure and
+ * testable without IMAP, and which also returns the reason and the
+ * tri-state `learnsAddress` the predictor needs.
  */
-export function classifyBounce({ dsnStatus = '', smtpCode = '', text = '' }) {
-  const status = String(dsnStatus).trim();
-
-  // RFC 3463: 5.x.x permanent, 4.x.x transient.
-  if (/^5\.\d+\.\d+$/.test(status)) return { type: 'hard', code: status };
-  if (/^4\.\d+\.\d+$/.test(status)) return { type: 'soft', code: status };
-
-  const code = String(smtpCode).match(/\b([45]\d{2})\b/)?.[1];
-  if (code?.startsWith('5')) return { type: 'hard', code };
-  if (code?.startsWith('4')) return { type: 'soft', code };
-
-  const body = String(text).toLowerCase();
-
-  if (/(user|mailbox|recipient|address)\s+(unknown|not found|does not exist|doesn't exist)/.test(body)
-    || /no such (user|mailbox|recipient)/.test(body)
-    || /invalid (recipient|mailbox|address)/.test(body)
-    || /550[\s-]*5\.1\.1/.test(body)
-    || /account (has been )?(disabled|deactivated|closed|terminated)/.test(body)
-    || /domain (not found|does not exist)/.test(body)) {
-    return { type: 'hard', code: code ?? '' };
-  }
-
-  if (/(mailbox|quota|storage).{0,20}(full|exceeded|limit)/.test(body)
-    || /over quota/.test(body)
-    || /temporar(y|ily)/.test(body)
-    || /try again later|deferred|greylist/.test(body)
-    || /out of office|vacation|auto[\s-]?reply/.test(body)) {
-    return { type: 'soft', code: code ?? '' };
-  }
-
-  return { type: 'unknown', code: code ?? '' };
+export function classifyBounce(input) {
+  return classifyBounceReason(input);
 }
 
 export function isComplaint(parsed) {
@@ -148,8 +126,9 @@ function readDeliveryStatus(parsed) {
 // twice, cannot double-count against the bounce rate that auto-pauses sending.
 function recordBounce(values) {
   return execute(
-    `INSERT INTO bounces (message_id, contact_id, campaign_id, email, bounce_type, smtp_code, diagnostic)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO bounces (message_id, contact_id, campaign_id, email, bounce_type, smtp_code,
+                          diagnostic, reason, dsn_status, learns_address)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (message_id, email, bounce_type) DO NOTHING`,
     values,
   );
@@ -176,11 +155,27 @@ export async function handleBounce({ parsed, settings }) {
   const email = (match?.job?.contact_email ?? dsn.finalRecipient ?? '').trim().toLowerCase();
   if (!email) return false;
 
-  const { type, code } = classifyBounce({
+  const { type, code, reason, learnsAddress } = classifyBounce({
     dsnStatus: dsn.dsnStatus,
     smtpCode: dsn.smtpCode,
     text: `${parsed.subject ?? ''}\n${parsed.text ?? ''}`,
   });
+
+  // An out-of-office is not a delivery failure. It used to be filed as a
+  // soft bounce, which counted towards the soft-bounce limit and could
+  // eventually suppress a contact who had simply gone on holiday.
+  if (type === 'auto_reply') {
+    await notePredictionEvent({
+      email,
+      eventType: 'auto_reply',
+      messageId: match?.messageId ?? '',
+      contactId: match?.job?.contact_id ?? null,
+      // It also proves the mailbox is real, which is worth recording.
+      learnsAddress: false,
+    });
+    log(`auto-reply from ${email}, not counted as a bounce`);
+    return true;
+  }
 
   await recordBounce([
     match?.messageId ?? null,
@@ -190,14 +185,30 @@ export async function handleBounce({ parsed, settings }) {
     type,
     code,
     dsn.diagnostic.slice(0, 500),
+    reason,
+    dsn.dsnStatus,
+    learnsAddress,
   ]);
+
+  // Recorded whatever the reason, including when it teaches us nothing -
+  // a delivery result cannot be reconstructed later, and the scorer will
+  // want the policy blocks as much as the user-unknowns.
+  await notePredictionEvent({
+    email,
+    eventType: 'bounce',
+    reason,
+    dsnStatus: dsn.dsnStatus,
+    learnsAddress,
+    messageId: match?.messageId ?? '',
+    contactId: match?.job?.contact_id ?? null,
+  });
 
   if (type === 'hard') {
     await suppress({ email, reason: 'hard_bounce', source: 'imap', notes: dsn.diagnostic.slice(0, 200) });
     await setStatusByEmail(email, 'bounced');
     const contact = await findByEmail(email);
     if (contact) await exitEnrollment({ contactId: contact.id, reason: 'bounced' });
-    log(`hard bounce, suppressed ${email} (${code || 'no code'})`);
+    log(`hard bounce (${reason}), suppressed ${email} (${code || 'no code'})`);
     return true;
   }
 
@@ -242,6 +253,57 @@ export async function handleComplaint({ parsed }) {
   return true;
 }
 
+/**
+ * Feeds a delivery result back to the Mail Predictor.
+ *
+ * This is what makes the predictor improve rather than merely repeat
+ * itself: a hard bounce retires the format that produced the address, and
+ * a reply promotes it from "an operator told us" to "we have proof".
+ *
+ * Deliberately non-fatal. Bounce and reply handling is the mechanism that
+ * protects the sending domain, and it must not be held up by bookkeeping
+ * for a secondary feature.
+ */
+async function notePredictionEvent({
+  email, eventType, reason = '', dsnStatus = '',
+  learnsAddress = null, messageId = '', contactId = null,
+}) {
+  try {
+    const prediction = await predictionForEmail(email);
+    // Only addresses we predicted. A bounce on an imported contact is
+    // already fully recorded in `bounces`, and without a prediction there
+    // is no format to attribute it to - storing it here would duplicate
+    // the log without adding a fact.
+    if (!prediction) return;
+
+    await recordPredictionEvent({
+      predictionId: prediction.id,
+      contactId,
+      email,
+      eventType,
+      reason,
+      dsnStatus,
+      learnsAddress,
+      messageId,
+    });
+    await refreshPredictionOutcome(prediction.id);
+
+    const where = { domain: prediction.domain, pattern: prediction.pattern };
+
+    // The point of the tri-state. A `5.7.1` block or a full mailbox says
+    // nothing about whether the address is right, so it must not retire a
+    // format - that was demoting working formats on the strength of a
+    // reputation problem.
+    if (eventType === 'bounce' && learnsAddress === true) {
+      await rejectPattern(where);
+    } else if (eventType === 'reply') {
+      await confirmPattern(where);
+    }
+  } catch (error) {
+    log(`could not record prediction event for ${email}: ${error.message}`);
+  }
+}
+
 export async function handleReply({ parsed }) {
   const match = await findOurMessageId(parsed.headers.get('in-reply-to'), parsed.references);
   if (!match?.job) return false;
@@ -261,6 +323,14 @@ export async function handleReply({ parsed }) {
         match.job.contact_email ?? '',
       ],
     );
+    // A reply is the strongest confirmation there is: a human is reading
+    // that mailbox, so the format that produced it is right.
+    await notePredictionEvent({
+      email: match.job.contact_email ?? '',
+      eventType: 'reply',
+      messageId: match.messageId ?? '',
+      contactId: match.job.contact_id ?? null,
+    });
   }
 
   // Stop every active sequence for this contact, not just the one they

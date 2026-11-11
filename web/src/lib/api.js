@@ -51,6 +51,12 @@ export const api = {
   logout: () => request('POST', '/auth/logout'),
   me: () => request('GET', '/auth/me'),
 
+  predictorBulk: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request('POST', '/predictor/bulk', form);
+  },
+
   importPreview: (file, options = {}) => {
     const form = new FormData();
     form.append('file', file);

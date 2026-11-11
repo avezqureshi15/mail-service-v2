@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, formatDate } from '../lib/api.js';
+import { useToast } from '../lib/toast.jsx';
 
 export default function Settings({ user }) {
   const [tab, setTab] = useState('sending');
@@ -42,9 +43,9 @@ export default function Settings({ user }) {
 }
 
 function SendingSettings({ isAdmin }) {
+  const toast = useToast();
   const [settings, setSettings] = useState(null);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -57,7 +58,6 @@ function SendingSettings({ isAdmin }) {
 
   async function save() {
     setError('');
-    setNotice('');
     setBusy(true);
     try {
       const { settings: updated } = await api.patch('/settings', {
@@ -80,9 +80,10 @@ function SendingSettings({ isAdmin }) {
         sequenceWaitUnit: settings.sequenceWaitUnit,
       });
       setSettings(updated);
-      setNotice('Settings saved.');
+      toast.success('Settings saved.');
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     } finally {
       setBusy(false);
     }
@@ -90,7 +91,6 @@ function SendingSettings({ isAdmin }) {
 
   return (
     <>
-      {notice && <div className="alert success">{notice}</div>}
       {error && <div className="alert error">{error}</div>}
 
       <div className="card">
@@ -209,10 +209,10 @@ function SendingSettings({ isAdmin }) {
 }
 
 function Users({ currentUser }) {
+  const toast = useToast();
   const [users, setUsers] = useState([]);
   const [form, setForm] = useState({ email: '', name: '', password: '', role: 'sender' });
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
 
   async function load() {
     try {
@@ -227,14 +227,14 @@ function Users({ currentUser }) {
   async function create(event) {
     event.preventDefault();
     setError('');
-    setNotice('');
     try {
       await api.post('/users', form);
-      setNotice(`${form.email} can now sign in.`);
+      toast.success(`${form.email} can now sign in.`);
       setForm({ email: '', name: '', password: '', role: 'sender' });
       load();
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     }
   }
 
@@ -242,15 +242,16 @@ function Users({ currentUser }) {
     setError('');
     try {
       await api.patch(`/users/${target.id}/active`, { isActive: !target.is_active });
+      toast.success(`${target.email} ${target.is_active ? 'deactivated' : 'reactivated'}.`);
       load();
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     }
   }
 
   return (
     <>
-      {notice && <div className="alert success">{notice}</div>}
       {error && <div className="alert error">{error}</div>}
 
       <div className="card">

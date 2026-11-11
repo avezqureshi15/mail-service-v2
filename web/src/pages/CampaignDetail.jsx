@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, formatDate, pct } from '../lib/api.js';
+import { useToast } from '../lib/toast.jsx';
 import { StatusBadge } from './Dashboard.jsx';
 
 export default function CampaignDetail({ user }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const toast = useToast();
 
   const [campaign, setCampaign] = useState(null);
   const [recipients, setRecipients] = useState([]);
   const [preview, setPreview] = useState(null);
   const [previewMode, setPreviewMode] = useState('desktop');
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
   const [blockers, setBlockers] = useState([]);
   const [busy, setBusy] = useState(false);
 
@@ -37,17 +38,17 @@ export default function CampaignDetail({ user }) {
 
   async function act(path, label) {
     setError('');
-    setNotice('');
     setBlockers([]);
     setBusy(true);
     try {
       const result = await api.post(`/campaigns/${id}/${path}`);
-      setNotice(result.queued !== undefined
+      toast.success(result.queued !== undefined
         ? `${label} - ${result.queued} message(s) queued for ${result.recipients} recipient(s).`
         : `${label}.`);
       await load();
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
       if (err.details) setBlockers(err.details);
     } finally {
       setBusy(false);
@@ -56,13 +57,13 @@ export default function CampaignDetail({ user }) {
 
   async function sendTest() {
     setError('');
-    setNotice('');
     setBusy(true);
     try {
       const result = await api.post(`/campaigns/${id}/test`, {});
-      setNotice(`Test message sent to ${result.sentTo}. Check it landed in the inbox, not spam.`);
+      toast.success(`Test message sent to ${result.sentTo}. Check it landed in the inbox, not spam.`);
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     } finally {
       setBusy(false);
     }
@@ -74,6 +75,7 @@ export default function CampaignDetail({ user }) {
       setPreview(await api.post(`/campaigns/${id}/preview`, {}));
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     }
   }
 
@@ -138,7 +140,6 @@ export default function CampaignDetail({ user }) {
         </div>
       </div>
 
-      {notice && <div className="alert success">{notice}</div>}
       {error && <div className="alert error">{error}</div>}
       {blockers.length > 0 && (
         <div className="alert error">

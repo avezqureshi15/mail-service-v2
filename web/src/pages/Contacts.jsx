@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useToast } from '../lib/toast.jsx';
 
 export default function Contacts() {
   const [contacts, setContacts] = useState([]);
@@ -114,6 +115,7 @@ export default function Contacts() {
  * The rep sees list quality before anything is mailed.
  */
 function ImportPanel({ onClose, onDone }) {
+  const toast = useToast();
   const [preview, setPreview] = useState(null);
   const [listName, setListName] = useState('');
   const [includeFlagged, setIncludeFlagged] = useState(false);
@@ -149,10 +151,12 @@ function ImportPanel({ onClose, onDone }) {
         setError('Nothing to import.');
         return;
       }
-      await api.post('/contacts/import/commit', { listName, includeFlagged: true, contacts });
+      const result = await api.post('/contacts/import/commit', { listName, includeFlagged: true, contacts });
+      toast.success(`Imported ${result.imported} contact(s) into "${result.list.name}"`);
       onDone();
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     } finally {
       setBusy(false);
     }
