@@ -1,0 +1,32 @@
+13-201-235-164.sslip.io {
+    encode gzip
+
+    request_body {
+        max_size 12MB
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:4000 {
+            # The app only issues Secure cookies when it believes the request
+            # arrived over HTTPS. TLS terminates here, so say so.
+            header_up X-Forwarded-Proto https
+
+            # Caddy discards X-Forwarded-For from an untrusted peer, which is
+            # right - otherwise anyone could forge a client IP. But that also
+            # drops the real visitor's address that Netlify put there, leaving
+            # every unsubscribe recorded against a Netlify egress IP.
+            #
+            # Netlify states the connecting client in its own header, so that
+            # is what we hand upstream. One address, so the app trusts exactly
+            # one hop.
+            header_up X-Forwarded-For {http.request.header.X-Nf-Client-Connection-Ip}
+        }
+    }
+}
+
+# Deployed at /etc/caddy/Caddyfile on the EC2 instance (ap-south-1).
+# Kept here so the server's configuration is version controlled rather than
+# existing only on the box. After editing:
+#   scp deploy/Caddyfile ubuntu@<ip>:/tmp/ && \
+#     ssh ubuntu@<ip> 'sudo mv /tmp/Caddyfile /etc/caddy/ && sudo caddy validate \
+#       --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy'
