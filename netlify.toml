@@ -1,7 +1,11 @@
 # Netlify configuration for the mail-service-v2 frontend.
 #
-# Backend: https://mail-service-v2-latest.onrender.com
-# If the Render service is renamed, update all three redirects below.
+# Backend: https://13-201-235-164.sslip.io  (EC2 i-021b84d80bd43f937, ap-south-1)
+#
+# The hostname is the Elastic IP through sslip.io, which resolves any
+# IP-shaped name to that IP - so Caddy can hold a real Let's Encrypt
+# certificate without us controlling any DNS zone. If the Elastic IP ever
+# changes, this hostname changes with it; update all three redirects below.
 #
 # WHY THE PROXY, rather than calling Render directly from the browser:
 #
@@ -41,7 +45,7 @@
 
 [[redirects]]
   from   = "/api/*"
-  to     = "https://mail-service-v2-latest.onrender.com/api/:splat"
+  to     = "https://13-201-235-164.sslip.io/api/:splat"
   status = 200
   force  = true
 
@@ -49,7 +53,7 @@
 # have never opened the app - this must work for a logged-out stranger.
 [[redirects]]
   from   = "/u/*"
-  to     = "https://mail-service-v2-latest.onrender.com/u/:splat"
+  to     = "https://13-201-235-164.sslip.io/u/:splat"
   status = 200
   force  = true
 
@@ -57,7 +61,7 @@
 # turning tracking on later needs no deploy change here.
 [[redirects]]
   from   = "/t/*"
-  to     = "https://mail-service-v2-latest.onrender.com/t/:splat"
+  to     = "https://13-201-235-164.sslip.io/t/:splat"
   status = 200
   force  = true
 
