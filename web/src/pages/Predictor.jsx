@@ -531,10 +531,43 @@ function Results({ outcome, onSaved }) {
         </Banner>
       )}
 
+      {outcome.skipped?.length > 0 && (
+        <>
+          <h3 style={{ marginTop: 22 }}>Skipped ({outcome.skipped.length})</h3>
+          <div className="table-wrap">
+            <table className="rtable">
+              <thead><tr><th>Name</th><th>Company</th><th>Why</th></tr></thead>
+              <tbody>
+                {outcome.skipped.slice(0, 50).map((row, i) => (
+                  <tr key={`${row.name}-${i}`}>
+                    <td data-label="Name">{row.name || '--'}</td>
+                    <td className="mono" data-label="Company">{row.domain || '--'}</td>
+                    <td className="muted" data-label="Why">{row.label}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
       {usable.length === 0 ? (
         <div className="empty">Nothing could be predicted from this input.</div>
       ) : (
         <>
+          {missingMergeFields && (
+            <Banner key={`merge-${runId}`} type="warning">
+              Some of these have no observation or role_examples. The outreach sequence will
+              refuse to start until every contact has both - fill those columns in the upload
+              template, or edit the contacts before sending.
+            </Banner>
+          )}
+
+          <Banner key={`advice-${runId}`} type="tip">
+            Roughly 8 in 10 predictions are exact. Do not send a whole new company at once -
+            mail two people, wait a day, and send the rest once those land.
+          </Banner>
+
           <div className="table-wrap">
             <table className="rtable">
               <thead>
@@ -634,39 +667,6 @@ function Results({ outcome, onSaved }) {
                 contacts will be added to it rather than a second one being created.
               </p>
             )}
-          </div>
-
-          {missingMergeFields && (
-            <Banner key={`merge-${runId}`} type="warning">
-              Some of these have no observation or role_examples. The outreach sequence will
-              refuse to start until every contact has both - fill those columns in the upload
-              template, or edit the contacts before sending.
-            </Banner>
-          )}
-
-          <Banner key={`advice-${runId}`} type="tip">
-            Roughly 8 in 10 predictions are exact. Do not send a whole new company at once -
-            mail two people, wait a day, and send the rest once those land.
-          </Banner>
-        </>
-      )}
-
-      {outcome.skipped?.length > 0 && (
-        <>
-          <h3 style={{ marginTop: 22 }}>Skipped ({outcome.skipped.length})</h3>
-          <div className="table-wrap">
-            <table className="rtable">
-              <thead><tr><th>Name</th><th>Company</th><th>Why</th></tr></thead>
-              <tbody>
-                {outcome.skipped.slice(0, 50).map((row, i) => (
-                  <tr key={`${row.name}-${i}`}>
-                    <td data-label="Name">{row.name || '--'}</td>
-                    <td className="mono" data-label="Company">{row.domain || '--'}</td>
-                    <td className="muted" data-label="Why">{row.label}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
         </>
       )}
