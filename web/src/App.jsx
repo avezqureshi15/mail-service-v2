@@ -4,7 +4,8 @@ import { api } from './lib/api.js';
 
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
-import Contacts from './pages/Contacts.jsx';
+import Lists from './pages/Lists.jsx';
+import ContactsList from './pages/ContactsList.jsx';
 import Predictor from './pages/Predictor.jsx';
 import Campaigns from './pages/Campaigns.jsx';
 import CampaignEditor from './pages/CampaignEditor.jsx';
@@ -91,7 +92,8 @@ export default function App() {
         </div>
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/contacts" element={<Contacts />} />
+          <Route path="/contacts" element={<Lists />} />
+          <Route path="/contacts/:id" element={<ContactsList />} />
           <Route path="/predictor" element={<Predictor />} />
           <Route path="/campaigns" element={<Campaigns />} />
           <Route path="/campaigns/new" element={<CampaignEditor />} />

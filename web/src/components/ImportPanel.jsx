@@ -1,127 +1,30 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useToast } from '../lib/toast.jsx';
 
-export default function Contacts() {
-  const [contacts, setContacts] = useState([]);
-  const [counts, setCounts] = useState({});
-  const [lists, setLists] = useState([]);
-  const [search, setSearch] = useState('');
-  const [listId, setListId] = useState('');
-  const [error, setError] = useState('');
-  const [importing, setImporting] = useState(false);
-
-  async function load() {
-    try {
-      const params = new URLSearchParams({ search, limit: '100' });
-      if (listId) params.set('listId', listId);
-      const [contactData, listData] = await Promise.all([
-        api.get(`/contacts?${params}`),
-        api.get('/lists'),
-      ]);
-      setContacts(contactData.contacts);
-      setCounts(contactData.counts);
-      setLists(listData.lists);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  useEffect(() => {
-    const timer = setTimeout(load, 250);
-    return () => clearTimeout(timer);
-  }, [search, listId]);
-
-  return (
-    <>
-      <div className="page-head">
-        <div>
-          <h2>Contacts</h2>
-          <p>
-            {counts.active ?? 0} active, {counts.unsubscribed ?? 0} unsubscribed,
-            {' '}{counts.bounced ?? 0} bounced.
-          </p>
-        </div>
-        <button type="button" onClick={() => setImporting(true)}>Import CSV</button>
-      </div>
-
-      {error && <div className="alert error">{error}</div>}
-
-      {importing && (
-        <ImportPanel
-          lists={lists}
-          onClose={() => setImporting(false)}
-          onDone={() => { setImporting(false); load(); }}
-        />
-      )}
-
-      <div className="card">
-        <div className="row" style={{ marginBottom: 14 }}>
-          <input
-            type="search"
-            placeholder="Search name, email or company"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <select value={listId} onChange={(e) => setListId(e.target.value)}>
-            <option value="">All lists</option>
-            {lists.map((list) => (
-              <option key={list.id} value={list.id}>
-                {list.name} ({list.contact_count})
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {contacts.length === 0 ? (
-          <div className="empty">No contacts match.</div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Email</th><th>Name</th><th>Company</th><th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {contacts.map((contact) => (
-                  <tr key={contact.id}>
-                    <td className="mono">
-                      {contact.email}
-                      {Boolean(contact.is_role_account) && (
-                        <span className="badge warn" style={{ marginLeft: 6 }}>role</span>
-                      )}
-                    </td>
-                    <td>{[contact.first_name, contact.last_name].filter(Boolean).join(' ') || '--'}</td>
-                    <td>{contact.company || '--'}</td>
-                    <td>
-                      <span className={`badge ${contact.status === 'active' ? 'good' : 'bad'}`}>
-                        {contact.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
-
 /**
- * Two-step import: preview shows the validation report, commit writes it.
- * The rep sees list quality before anything is mailed.
+ * Three-step import: pick a destination list, preview shows the validation
+ * report, commit writes it. The destination is chosen up front so the rep
+ * never uploads a file before deciding where it goes.
  */
-function ImportPanel({ onClose, onDone }) {
+export default function ImportPanel({ lists, currentListId, onClose, onDone }) {
   const toast = useToast();
   const [preview, setPreview] = useState(null);
-  const [listName, setListName] = useState('');
+  const [destMode, setDestMode] = useState(
+    currentListId || lists.length > 0 ? 'existing' : 'new',
+  );
+  const [existingListId, setExistingListId] = useState(
+    currentListId || (lists[0] ? String(lists[0].id) : ''),
+  );
+  const [newListName, setNewListName] = useState('');
   const [includeFlagged, setIncludeFlagged] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
+
+  const destListName = destMode === 'existing'
+    ? (lists.find((list) => String(list.id) === String(existingListId))?.name ?? '')
+    : newListName.trim();
 
   async function runPreview(event) {
     const file = event.target.files?.[0];
@@ -131,7 +34,7 @@ function ImportPanel({ onClose, onDone }) {
     try {
       const result = await api.importPreview(file);
       setPreview(result);
-      if (!listName) setListName(file.name.replace(/\.csv$/i, ''));
+      if (destMode === 'new' && !newListName) setNewListName(file.name.replace(/\.csv$/i, ''));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -141,6 +44,10 @@ function ImportPanel({ onClose, onDone }) {
 
   async function commit() {
     setError('');
+    if (!destListName) {
+      setError('Choose a list to import into.');
+      return;
+    }
     setBusy(true);
     try {
       const contacts = includeFlagged
@@ -151,7 +58,7 @@ function ImportPanel({ onClose, onDone }) {
         setError('Nothing to import.');
         return;
       }
-      const result = await api.post('/contacts/import/commit', { listName, includeFlagged: true, contacts });
+      const result = await api.post('/contacts/import/commit', { listName: destListName, includeFlagged: true, contacts });
       toast.success(`Imported ${result.imported} contact(s) into "${result.list.name}"`);
       onDone();
     } catch (err) {
@@ -172,6 +79,54 @@ function ImportPanel({ onClose, onDone }) {
       </div>
 
       {error && <div className="alert error">{error}</div>}
+
+      <div className="field">
+        <label>Import into</label>
+        <div className="actions" style={{ marginBottom: 8 }}>
+          <label style={{ fontWeight: 400, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="radio"
+              name="destMode"
+              style={{ width: 'auto' }}
+              checked={destMode === 'existing'}
+              disabled={lists.length === 0}
+              onChange={() => setDestMode('existing')}
+            />
+            An existing list
+          </label>
+          <label style={{ fontWeight: 400, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="radio"
+              name="destMode"
+              style={{ width: 'auto' }}
+              checked={destMode === 'new'}
+              onChange={() => setDestMode('new')}
+            />
+            A new list
+          </label>
+        </div>
+
+        {destMode === 'existing' ? (
+          lists.length > 0 ? (
+            <select value={existingListId} onChange={(e) => setExistingListId(e.target.value)}>
+              {lists.map((list) => (
+                <option key={list.id} value={list.id}>
+                  {list.name} ({list.contact_count})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="hint">No lists yet - create one below.</div>
+          )
+        ) : (
+          <input
+            type="text"
+            value={newListName}
+            onChange={(e) => setNewListName(e.target.value)}
+            placeholder="e.g. Q4 Prospects"
+          />
+        )}
+      </div>
 
       {!preview ? (
         <>
@@ -210,18 +165,6 @@ function ImportPanel({ onClose, onDone }) {
             />
           )}
 
-          <div className="field">
-            <label htmlFor="listName">Add to list</label>
-            <input
-              id="listName"
-              type="text"
-              value={listName}
-              onChange={(e) => setListName(e.target.value)}
-              placeholder="e.g. Q4 Prospects"
-            />
-            <div className="hint">An existing list with this name is reused.</div>
-          </div>
-
           {preview.summary.flagged > 0 && (
             <div className="checkbox field">
               <input
@@ -241,10 +184,10 @@ function ImportPanel({ onClose, onDone }) {
           )}
 
           <div className="actions">
-            <button type="button" onClick={commit} disabled={busy || !listName.trim()}>
+            <button type="button" onClick={commit} disabled={busy || !destListName}>
               {busy ? 'Importing...' : `Import ${includeFlagged
                 ? preview.summary.accepted + preview.summary.flagged
-                : preview.summary.accepted} contact(s)`}
+                : preview.summary.accepted} contact(s)${destListName ? ` into "${destListName}"` : ''}`}
             </button>
             <button type="button" className="secondary" onClick={() => setPreview(null)}>
               Choose a different file
