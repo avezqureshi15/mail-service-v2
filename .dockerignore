@@ -1,0 +1,32 @@
+# The build context is the repository root, so these rules cover both halves.
+
+# Secrets. The image must never carry these - they are supplied as
+# environment variables at run time. Listed first because it is the one
+# entry that really matters.
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.production.example
+
+**/node_modules
+**/npm-debug.log*
+
+# Built locally; stage 1 compiles its own copy, and shipping a stale local
+# build would quietly serve code that does not match the commit.
+web/dist
+
+# Not needed at run time.
+server/test
+server/data
+**/*.db
+**/*.db-shm
+**/*.db-wal
+
+.git
+.gitignore
+.github
+.claude
+**/.DS_Store
+*.md
+deploy.sh
+netlify.toml
