@@ -8,6 +8,38 @@ and `/t` through to Render. That is not decoration — see
 
 ---
 
+## Architecture
+
+Everything is served from one EC2 instance behind Caddy:
+
+```
+browser ──HTTPS──► Caddy (TLS) ──► 127.0.0.1:4000 ──► Supabase
+                                                 └──► Gmail / Zoho SMTP
+```
+
+`https://13-201-235-164.sslip.io` - sslip.io resolves any IP-shaped hostname
+to that IP, so Caddy holds a real Let's Encrypt certificate without us
+controlling a DNS zone. The hostname follows the Elastic IP; change the IP
+and the hostname changes with it.
+
+The frontend is compiled into the Docker image and served by Express, which
+already had the code for it (`express.static` plus an SPA fallback in
+`server/src/index.js`). One origin means the API call from the browser never
+leaves the machine - Caddy hands it straight to loopback.
+
+### Why not Netlify any more
+
+It ran out of credits and **silently skipped five consecutive deploys** while
+continuing to serve the old bundle. Nothing errored; the site stayed up on
+stale code. Serving from the instance we already pay for removes that failure
+mode, removes a network hop, and removes the cross-origin cookie handling and
+`X-Nf-Client-Connection-Ip` mapping that the split required.
+
+The Netlify site still exists, frozen at commit `aab8ac5`. Delete it when
+convenient - it is only a confusing URL now.
+
+---
+
 ## Deploying: `./deploy.sh`
 
 ```bash
@@ -15,34 +47,33 @@ and `/t` through to Render. That is not decoration — see
 ```
 
 ```bash
-./deploy.sh --dry-run
+./deploy.sh "message" path/one path/two     # scope the release to these
 ```
 
 ```bash
-./deploy.sh --verify
+./deploy.sh --dry-run        # every check, changes nothing
+./deploy.sh --verify         # what is live right now
 ```
 
-It works out for itself whether the backend needs redeploying. **If nothing
-under `server/` changed it skips the image entirely** - a frontend-only
-change takes ~20 seconds instead of ~4 minutes, and the running backend is
-never restarted. Netlify rebuilds from the push on its own; the image host
-does not, which is why that half has to be driven.
-
-The checks it runs before touching anything, each of which caught a real
-problem:
+Every change now rebuilds the image, because the frontend lives inside it.
+The checks it runs, each of which caught something real:
 
 | Check | What it prevents |
 |---|---|
-| `package.json` vs lockfile | `npm ci` failing four minutes into the Docker build |
-| New `required()` env var present locally *and on EC2* | the container refusing to boot - production down |
+| `package.json` vs lockfile, both halves | `npm ci` failing minutes into the build |
+| New `required()` env var present locally **and on EC2** | the container refusing to boot - production down |
 | Destructive statements in new migrations | shipping a `DROP` against the live database unnoticed |
 | Secret scan over staged content | a credential reaching the public repo past `.gitignore` |
-| Tests, but only when `server/` changed | wasting two minutes on a CSS change |
-| Endpoint verification after deploy | believing a deploy that silently half-worked |
+| Server tests, only when `server/` changed | wasting minutes on a CSS change |
+| **Live bundle matches the built bundle** | believing a deploy that never happened |
 
-It aborts on any of them rather than continuing. Exit codes on `docker build`
-and `docker push` are checked explicitly, because piping them into `tail`
-once reported success for a build that had failed.
+That last one is the lesson from the Netlify outage. Endpoint health passes
+happily against a stale deploy, so the script reads the content-hashed bundle
+filename out of the image and refuses to report success until production
+serves exactly that file.
+
+Passing paths scopes the whole run, including what gets staged - useful when
+another agent or editor is mid-change in the same working tree.
 
 ---
 
