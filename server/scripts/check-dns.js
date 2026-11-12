@@ -15,6 +15,7 @@
 import { parseArgs } from 'node:util';
 import { env } from '../src/config/env.js';
 import { checkDomain } from '../src/lib/dns-check.js';
+import { resolveProvider } from '../src/config/providers.js';
 import { loadMailboxes, allMailboxes, defaultMailbox } from '../src/db/repositories/mailboxes.js';
 import { closePool } from '../src/db/index.js';
 
@@ -24,23 +25,49 @@ const { values } = parseArgs({
     selector: { type: 'string' },
     dc: { type: 'string' },
     mailbox: { type: 'string' },
+    provider: { type: 'string' },
   },
   allowPositionals: false,
 });
 
 await loadMailboxes();
 
-const mailbox = values.mailbox
-  ? allMailboxes().find((m) => String(m.id) === values.mailbox
+function findMailbox() {
+  if (values.mailbox) {
+    return allMailboxes().find((m) => String(m.id) === values.mailbox
       || m.label.toLowerCase() === values.mailbox.toLowerCase()
-      || m.from_email.toLowerCase() === values.mailbox.toLowerCase())
-  : defaultMailbox();
+      || m.from_email.toLowerCase() === values.mailbox.toLowerCase());
+  }
+  // An explicit --domain should check THAT domain's provider, not whichever
+  // mailbox happens to be the default - otherwise checking a Zoho domain
+  // reports it as failing to authorise Google.
+  if (values.domain) {
+    return allMailboxes().find(
+      (m) => m.sending_domain.toLowerCase() === values.domain.toLowerCase(),
+    );
+  }
+  return defaultMailbox();
+}
+
+const mailbox = findMailbox();
 
 const domain = values.domain ?? mailbox?.sending_domain ?? env.SENDING_DOMAIN;
 const selector = values.selector ?? mailbox?.dkim_selector ?? env.DKIM_SELECTOR;
+
 // The preset carries the SPF include this provider requires, so the check
 // verifies the right one rather than accepting any plausible include.
-const provider = mailbox?.preset ?? env.provider;
+//
+// --provider and --dc are for a domain no mailbox has been created for yet,
+// which is the normal case when you are setting the DNS up first.
+const provider = values.provider || values.dc
+  ? resolveProvider(values.provider ?? 'zoho', '', values.dc ?? null)
+  : mailbox?.preset ?? env.provider;
+
+if (!values.provider && !values.dc && !mailbox && values.domain) {
+  console.log(dim(`No mailbox sends from ${values.domain} yet - checking against `
+    + `${provider.label}. Pass --provider zoho --dc in to check a different one.
+`));
+}
 
 const green = (s) => `\x1b[32m${s}\x1b[0m`;
 const red = (s) => `\x1b[31m${s}\x1b[0m`;

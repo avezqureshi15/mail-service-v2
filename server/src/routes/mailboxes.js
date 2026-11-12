@@ -90,9 +90,12 @@ function domainOf(email) {
  * the tempting "fix" is to stop verifying certificates, which would hand
  * every mailbox password to whatever is in the middle.
  */
-function tlsHint(error) {
+export function tlsHint(error) {
   const code = error?.code ?? '';
-  const text = String(error?.message ?? '');
+  // `responseText` first: imapflow reduces anything the server refused to a
+  // bare "Command failed", so reading only `message` loses the one sentence
+  // that says what is actually wrong - and the hint then guesses, badly.
+  const text = `${error?.responseText ?? ''} ${error?.message ?? ''}`.trim();
 
   if (/SELF_SIGNED_CERT|DEPTH_ZERO_SELF_SIGNED_CERT|self-signed certificate/i.test(`${code} ${text}`)) {
     return 'The certificate presented was not the provider\'s. This is usually antivirus or '
@@ -107,10 +110,18 @@ function tlsHint(error) {
   if (/ENOTFOUND|EAI_AGAIN/i.test(code)) {
     return 'The host could not be resolved. Check the IMAP host for this provider.';
   }
-  if (/ETIMEDOUT|ECONNREFUSED/i.test(code)) {
-    return 'Nothing answered on that port. A firewall may be blocking outbound IMAP.';
+  if (/ETIMEDOUT|ECONNREFUSED/i.test(code) || /Connection timeout/i.test(text)) {
+    return 'Nothing answered on that port. Check the port number first - a timeout here '
+      + 'usually means nothing is listening rather than that credentials are wrong. '
+      + 'SMTP is 465 (implicit TLS) or 587 (STARTTLS); IMAP is 993. A firewall blocking '
+      + 'outbound mail ports would look the same.';
   }
-  if (/AUTHENTICATIONFAILED|Invalid credentials/i.test(text)) {
+  if (/not enabled|yet to enable|disabled/i.test(text)) {
+    return 'The account exists and the password is right, but the protocol is switched off '
+      + 'for this mailbox. Enable IMAP access in the provider’s own settings - for Zoho '
+      + 'that is Mail Settings > Mail Accounts > IMAP Access, and an admin may have to do it.';
+  }
+  if (error?.authenticationFailed || /AUTHENTICATIONFAILED|Invalid credentials/i.test(text)) {
     return 'The server rejected the credentials. IMAP needs an app-specific password too, '
       + 'and it has to be generated while signed in as this mailbox.';
   }
@@ -121,14 +132,15 @@ function tlsHint(error) {
  * Fills in whatever the form left blank from the provider preset, so adding a
  * Zoho or Google mailbox needs an address and a password and nothing else.
  */
-function applyPreset(body, existing = null) {
+export function applyPreset(body, existing = null) {
   const provider = body.provider ?? existing?.provider ?? 'other';
   const smtpHost = body.smtpHost ?? existing?.smtp_host ?? '';
-  const preset = resolveProvider(provider, smtpHost || PROVIDERS[provider]?.smtpHost || '');
+  const region = body.region ?? existing?.region ?? null;
+  const preset = resolveProvider(provider, smtpHost || PROVIDERS[provider]?.smtpHost || '', region);
 
   const fromEmail = body.fromEmail ?? existing?.from_email;
-  const regional = provider === 'zoho' && body.region && PROVIDERS.zoho.regions?.[body.region]
-    ? PROVIDERS.zoho.regionHosts(body.region)
+  const regional = provider === 'zoho' && region && PROVIDERS.zoho.regions?.[region]
+    ? PROVIDERS.zoho.regionHosts(region)
     : null;
 
   return {
@@ -152,7 +164,7 @@ function applyPreset(body, existing = null) {
  * The checks that stop a mailbox being saved into a state that fails silently
  * at send time rather than loudly here.
  */
-function validateMailbox({ preset, values, body, existing }) {
+export function validateMailbox({ preset, values, body, existing }) {
   const fromEmail = body.fromEmail ?? existing?.from_email;
 
   // Gmail rewrites any From other than the authenticated mailbox or a
@@ -166,7 +178,43 @@ function validateMailbox({ preset, values, body, existing }) {
     };
   }
 
+  // Ports. For a known provider the valid set is known too, so a transposed
+  // digit is caught here rather than surfacing later as a bare timeout that
+  // looks like a firewall or a bad password.
+  if (preset.id !== 'other') {
+    const smtpPort = values.smtp_port;
+    if (![465, 587].includes(Number(smtpPort))) {
+      return {
+        error: `${preset.label} uses SMTP port 465 or 587, not ${smtpPort}.`,
+        detail: '465 is implicit TLS, 587 negotiates STARTTLS.',
+      };
+    }
+  }
+
   const imapEnabled = body.imapEnabled ?? existing?.imap_enabled ?? false;
+
+  if (preset.id !== 'other' && imapEnabled && Number(values.imap_port) !== 993) {
+    return {
+      error: `${preset.label} uses IMAP port 993, not ${values.imap_port}.`,
+      detail: 'This service connects over implicit TLS, which is always 993.',
+    };
+  }
+
+  // SMTP and IMAP must live in the same data centre. Zoho runs regional ones
+  // and a mailbox exists in exactly one of them, so a .com SMTP host paired
+  // with a .in IMAP host means at least one is wrong - and the SPF include
+  // has to match whichever one actually sends.
+  const dcOf = (host) => String(host).toLowerCase().match(/^(?:smtp|smtppro|imap|imappro)\.zoho\.(.+)$/)?.[1] ?? null;
+  const smtpDc = dcOf(values.smtp_host);
+  const imapDc = imapEnabled ? dcOf(values.imap_host) : smtpDc;
+
+  if (smtpDc && imapDc && smtpDc !== imapDc) {
+    return {
+      error: `SMTP is in the ${smtpDc} data centre but IMAP is in ${imapDc}.`,
+      detail: 'A mailbox lives in one data centre. Pick it above and let both hosts follow, '
+        + 'or correct whichever host is wrong.',
+    };
+  }
   const willHaveImapPassword = body.imapPassword || existing?.imap_password_cipher;
   if (imapEnabled && (!values.imap_host || !values.imap_user || !willHaveImapPassword)) {
     return { error: 'IMAP needs a host, a username and a password, or it has to be turned off.' };
@@ -205,6 +253,27 @@ function present(mailbox) {
     bulkPolicyNote: mailbox.preset.bulkPolicyNote,
     appPasswordUrl: mailbox.preset.appPasswordUrl,
   };
+}
+
+/**
+ * Names the constraint a write actually tripped.
+ *
+ * There are three unique indexes on `mailboxes`, and reporting all of them as
+ * "name or address already exists" sends the operator hunting for a duplicate
+ * that is not there - the conflict is just as likely to be the single-default
+ * rule, which is not a duplicate at all.
+ */
+function uniqueViolationMessage(error) {
+  switch (error.constraint) {
+    case 'idx_mailboxes_from':
+      return 'A mailbox with that sender address already exists';
+    case 'idx_mailboxes_label':
+      return 'A mailbox with that name already exists';
+    case 'idx_mailboxes_default':
+      return 'Another mailbox is already pre-selected for new campaigns';
+    default:
+      return 'That mailbox conflicts with an existing one';
+  }
 }
 
 mailboxesRouter.get('/', (_req, res) => {
@@ -295,7 +364,7 @@ mailboxesRouter.post('/', requireAdmin, validate(mailboxSchema), async (req, res
     res.status(201).json({ mailbox: present(mailbox) });
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(409).json({ error: 'A mailbox with that name or address already exists' });
+      return res.status(409).json({ error: uniqueViolationMessage(error) });
     }
     next(error);
   }
@@ -355,7 +424,7 @@ mailboxesRouter.patch('/:id', requireAdmin, validate(mailboxPatchSchema), async 
     res.json({ mailbox: present(mailbox) });
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(409).json({ error: 'A mailbox with that name or address already exists' });
+      return res.status(409).json({ error: uniqueViolationMessage(error) });
     }
     next(error);
   }
@@ -402,7 +471,14 @@ mailboxesRouter.post('/:id/verify', requireAdmin, async (req, res, next) => {
         await client.logout();
         result.imap = { ok: true };
       } catch (error) {
-        result.imap = { ok: false, error: error.message, hint: tlsHint(error) };
+        // imapflow reports "Command failed" for anything the server refused.
+        // The server's own text is the useful part - "You are yet to enable
+        // IMAP for your account" is an answer; "Command failed" is not.
+        result.imap = {
+          ok: false,
+          error: error.responseText || error.message,
+          hint: tlsHint(error),
+        };
       }
     }
 

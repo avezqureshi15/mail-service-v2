@@ -1,4 +1,4 @@
-import { query, queryOne, execute } from '../index.js';
+import { query, queryOne, execute, transaction } from '../index.js';
 import { open } from '../../lib/secret-box.js';
 import { resolveProvider, pacingDefaults } from '../../config/providers.js';
 import { asDayString } from '../../lib/warmup.js';
@@ -45,7 +45,7 @@ export function invalidateMailboxCache() {
  * preset would step the allowance up - the one thing warm-up exists to avoid.
  */
 function resolvePacing(row) {
-  const preset = resolveProvider(row.provider, row.smtp_host);
+  const preset = resolveProvider(row.provider, row.smtp_host, row.region);
   const defaults = pacingDefaults(preset);
 
   return {
@@ -64,7 +64,10 @@ function decorate(row) {
   return {
     ...row,
     warmup_started_on: asDayString(row.warmup_started_on),
-    preset: resolveProvider(row.provider, row.smtp_host),
+    // The stored region wins over sniffing the host: an operator who picked
+    // a data centre explicitly should not have that overridden by a
+    // hostname they typed by hand.
+    preset: resolveProvider(row.provider, row.smtp_host, row.region),
     pacing: resolvePacing(row),
   };
 }
@@ -214,14 +217,21 @@ export async function createMailbox(values, createdBy = null) {
   const columns = Object.keys(values).filter((key) => WRITABLE.has(key));
   const placeholders = columns.map((_, i) => `$${i + 1}`);
 
-  const row = await queryOne(
-    `INSERT INTO mailboxes (${columns.join(', ')}, created_by)
-     VALUES (${placeholders.join(', ')}, $${columns.length + 1})
-     RETURNING *`,
-    [...columns.map((key) => values[key]), createdBy],
-  );
+  const row = await transaction(async (tx) => {
+    // The old default has to be cleared BEFORE the new row lands. Only one
+    // mailbox per tenant may carry the flag, and the database enforces that
+    // with a partial unique index - so clearing afterwards never runs, because
+    // the insert has already been rejected.
+    if (values.is_default) await clearDefaults(tx);
 
-  if (row.is_default) await clearOtherDefaults(row.id);
+    return tx.queryOne(
+      `INSERT INTO mailboxes (${columns.join(', ')}, created_by)
+       VALUES (${placeholders.join(', ')}, $${columns.length + 1})
+       RETURNING *`,
+      [...columns.map((key) => values[key]), createdBy],
+    );
+  });
+
   await loadMailboxes();
   return getMailbox(row.id);
 }
@@ -239,26 +249,34 @@ export async function updateMailbox(id, patch) {
   const touchesConnection = columns.some((key) => CONNECTION_COLUMNS.includes(key));
   if (touchesConnection) assignments.push('config_version = config_version + 1');
 
-  await execute(
-    `UPDATE mailboxes SET ${assignments.join(', ')}, updated_at = now()
-      WHERE id = $${columns.length + 1}`,
-    [...columns.map((key) => patch[key]), Number(id)],
-  );
+  await transaction(async (tx) => {
+    // Same ordering as createMailbox, and for the same reason: promoting this
+    // mailbox to default has to demote the incumbent first.
+    if (patch.is_default) await clearDefaults(tx, id);
 
-  if (patch.is_default) await clearOtherDefaults(id);
+    await tx.execute(
+      `UPDATE mailboxes SET ${assignments.join(', ')}, updated_at = now()
+        WHERE id = $${columns.length + 1}`,
+      [...columns.map((key) => patch[key]), Number(id)],
+    );
+  });
+
   await loadMailboxes();
   return getMailbox(id);
 }
 
 /**
- * The partial unique index allows only one default per tenant, so the old one
- * has to be cleared before the new one lands - otherwise the write fails on a
- * constraint the operator never set.
+ * Clears the default flag, optionally sparing one row.
+ *
+ * Takes the transaction explicitly so the clear and the write that depends on
+ * it cannot end up on different connections - which would let another request
+ * slip a default in between them and fail the unique index anyway.
  */
-function clearOtherDefaults(keepId) {
-  return execute(
-    'UPDATE mailboxes SET is_default = FALSE, updated_at = now() WHERE id <> $1 AND is_default',
-    [Number(keepId)],
+function clearDefaults(tx, exceptId = null) {
+  return tx.execute(
+    `UPDATE mailboxes SET is_default = FALSE, updated_at = now()
+      WHERE is_default AND ($1::int IS NULL OR id <> $1)`,
+    [exceptId === null ? null : Number(exceptId)],
   );
 }
 

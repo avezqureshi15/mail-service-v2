@@ -47,9 +47,15 @@ export const PROVIDERS = {
   zoho: {
     id: 'zoho',
     label: 'Zoho Mail',
-    smtpHost: 'smtp.zoho.com',
+    // `smtppro`, not `smtp`: Zoho runs separate hosts for paid organisation
+    // accounts on a custom domain and for free personal ones, and this
+    // service exists to send from a custom domain. A free zohomail.com
+    // account wants smtp.zoho.* instead - the field stays editable, and
+    // Zoho's own documentation is inconsistent enough that the admin console
+    // is the authority when a login is refused.
+    smtpHost: 'smtppro.zoho.com',
     smtpPort: 465,
-    imapHost: 'imap.zoho.com',
+    imapHost: 'imappro.zoho.com',
     imapPort: 993,
     spfInclude: 'zoho.com',
     dkimSelector: 'zoho',
@@ -71,8 +77,9 @@ export const PROVIDERS = {
       com: 'Global', in: 'India', eu: 'Europe', 'com.au': 'Australia', jp: 'Japan', uk: 'UK', sa: 'Saudi Arabia',
     },
     regionHosts: (region) => ({
-      smtpHost: `smtp.zoho.${region}`,
-      imapHost: `imap.zoho.${region}`,
+      smtpHost: `smtppro.zoho.${region}`,
+      imapHost: `imappro.zoho.${region}`,
+      // The SPF include is the plain regional name whichever host sends.
       spfInclude: `zoho.${region}`,
     }),
   },
@@ -155,15 +162,25 @@ export function providerFromHost(host = '') {
  * Resolves a provider preset, applying the regional variant where the
  * provider has them.
  *
+ * Getting the region wrong is not cosmetic: it decides which SPF include the
+ * DNS checker verifies, and an account in the India data centre authorised
+ * against `zoho.com` fails every message while the record reads correctly.
+ *
  * @param {string} id      One of PROVIDERS.
- * @param {string} host    The configured SMTP host, used to detect the region.
+ * @param {string} host    SMTP host, used to detect the region when not given.
+ * @param {string} region  Explicit region, which wins over host sniffing.
  */
-export function resolveProvider(id, host = '') {
+export function resolveProvider(id, host = '', region = null) {
   const base = PROVIDERS[id] ?? PROVIDERS.other;
   if (!base.regions) return base;
 
-  const region = String(host).toLowerCase().match(/^smtp\.zoho\.(.+)$/)?.[1];
-  if (!region || !(region in base.regions)) return base;
+  // Matches both the paid `smtppro.zoho.in` and the free `smtp.zoho.in`.
+  // Anchoring on `smtp.` alone silently dropped every pro host back to the
+  // global preset, and with it to the wrong SPF include.
+  const sniffed = String(host).toLowerCase().match(/^(?:smtp|smtppro|imap|imappro)\.zoho\.(.+)$/)?.[1];
+  const resolved = region ?? sniffed;
 
-  return { ...base, region, ...base.regionHosts(region) };
+  if (!resolved || !(resolved in base.regions)) return base;
+
+  return { ...base, region: resolved, ...base.regionHosts(resolved) };
 }

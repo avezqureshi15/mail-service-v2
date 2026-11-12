@@ -617,10 +617,15 @@ async function pollOnce(mailboxId) {
     state.failures = 0;
     await writeScanOutcome(mailboxId, null);
   } catch (error) {
-    if (AUTH_FAILURE.test(error.message)) {
-      log(`[${mailbox.label}] authentication failed - poller stopped until the password is fixed`);
-      await writeScanOutcome(mailboxId, error.message);
-      await recordMailboxError(mailboxId, `IMAP authentication failed: ${error.message}`);
+    // `authenticationFailed` is the reliable signal: imapflow sets it even
+    // when the message is a generic "Command failed", which the pattern
+    // below would never match - and retrying a refusal on a timer is how an
+    // account gets locked.
+    if (error.authenticationFailed || AUTH_FAILURE.test(error.responseText || error.message)) {
+      log(`[${mailbox.label}] IMAP refused (${error.responseText || error.message}) - poller stopped`);
+      const detail = error.responseText || error.message;
+      await writeScanOutcome(mailboxId, detail);
+      await recordMailboxError(mailboxId, `IMAP refused: ${detail}`);
       state.stopped = true;
       pollers.delete(mailboxId);
       return;

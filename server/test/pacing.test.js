@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PROVIDERS, pacingDefaults, buildWarmupSchedule } from '../src/config/providers.js';
+import {
+  PROVIDERS, pacingDefaults, buildWarmupSchedule, resolveProvider,
+} from '../src/config/providers.js';
 
 /**
  * The pacing numbers have to agree with each other. An hourly cap that
@@ -76,4 +78,42 @@ test('warm-up terminates even for an absurd target', () => {
 test('a target below the starting volume still produces a usable ramp', () => {
   const schedule = buildWarmupSchedule(10);
   assert.deepEqual(schedule, [10], 'nothing to ramp through, so go straight there');
+});
+
+
+/**
+ * Zoho's regional data centres.
+ *
+ * The SPF include has to match the data centre the account lives in -
+ * `include:zoho.in` for India, `include:zoho.com` for global. Resolving the
+ * wrong one produces a DNS record that reads correctly and authenticates
+ * nothing, so every message fails SPF with no obvious cause.
+ */
+test('zoho region is detected from the paid host as well as the free one', () => {
+  for (const host of ['smtp.zoho.in', 'smtppro.zoho.in', 'imappro.zoho.in']) {
+    const preset = resolveProvider('zoho', host);
+    assert.equal(preset.region, 'in', `${host} should resolve to the India data centre`);
+    assert.equal(preset.spfInclude, 'zoho.in', `${host} must authorise the India include`);
+  }
+});
+
+test('an explicitly chosen region beats whatever the host looks like', () => {
+  // The operator picks the data centre in the UI; a hand-typed host must not
+  // silently override it.
+  const preset = resolveProvider('zoho', 'smtp.example.invalid', 'eu');
+  assert.equal(preset.region, 'eu');
+  assert.equal(preset.spfInclude, 'zoho.eu');
+  assert.equal(preset.smtpHost, 'smtppro.zoho.eu');
+});
+
+test('an unknown region falls back to the global preset rather than inventing one', () => {
+  const preset = resolveProvider('zoho', 'smtppro.zoho.nowhere');
+  assert.equal(preset.spfInclude, 'zoho.com');
+});
+
+test('the zoho preset targets the paid custom-domain hosts', () => {
+  // This service sends from a custom domain, which on Zoho is a paid
+  // organisation account - those use the `pro` hosts.
+  assert.match(PROVIDERS.zoho.smtpHost, /^smtppro\./);
+  assert.match(PROVIDERS.zoho.imapHost, /^imappro\./);
 });

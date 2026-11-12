@@ -391,7 +391,8 @@ function MailboxForm({ value, providers, onCancel, onSaved }) {
           </select>
           <div className="hint">
             Must match the data centre the account lives in - the SPF include differs per
-            region, and a mismatch authenticates nothing.
+            region, and a mismatch produces a DNS record that reads correctly and
+            authenticates nothing.
           </div>
         </div>
       )}
@@ -425,6 +426,14 @@ function MailboxForm({ value, providers, onCancel, onSaved }) {
         <div className="field">
           <label htmlFor="mb-smtp-host">Host</label>
           <input id="mb-smtp-host" value={form.smtpHost} onChange={(e) => set({ smtpHost: e.target.value })} />
+          {form.provider === 'zoho' && (
+            <div className="hint">
+              Filled in for a paid account on your own domain. A free personal
+              zohomail.com account uses <span className="mono">smtp.zoho.*</span> and{' '}
+              <span className="mono">imap.zoho.*</span> instead, without the{' '}
+              <span className="mono">pro</span>.
+            </div>
+          )}
         </div>
         <div className="field">
           <label htmlFor="mb-smtp-port">Port</label>

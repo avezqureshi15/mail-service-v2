@@ -9,6 +9,7 @@ import { setupTestSchema, teardownTestSchema, makeTestMailbox } from './helpers/
 import { query, queryOne } from '../src/db/index.js';
 import {
   loadMailboxes, getMailbox, activeMailboxes, sendingDomains, mailboxSecrets, pauseMailbox,
+  createMailbox, updateMailbox, defaultMailbox,
 } from '../src/db/repositories/mailboxes.js';
 import { createCampaign, replaceSteps, setCampaignStatus, reassignMailbox } from '../src/db/repositories/campaigns.js';
 import { queueJobs, claimNextJob, incrementSentToday, sentToday } from '../src/db/repositories/jobs.js';
@@ -224,4 +225,48 @@ test('warm-up ramps each mailbox on its own schedule', () => {
     dailyCap: 300, warmupEnabled: true, warmupStartedOn: null, warmupSchedule: [20],
   });
   assert.equal(notStarted, 300);
+});
+
+
+test('adding a second mailbox as the default demotes the first instead of failing', async () => {
+  // Only one mailbox per tenant may be the default, enforced by a partial
+  // unique index. Clearing the incumbent has to happen before the new row
+  // lands - doing it afterwards means the insert is already rejected, and the
+  // operator sees a duplicate-name error for a name that is not duplicated.
+  const { seal } = await import('../src/lib/secret-box.js');
+  const suffix = Math.random().toString(36).slice(2, 8);
+
+  const before = defaultMailbox();
+  assert.ok(before, 'this test needs an existing default to displace');
+
+  const created = await createMailbox({
+    label: `promoted-${suffix}`,
+    provider: 'zoho',
+    from_name: 'New Default',
+    from_email: `new-default-${suffix}@promote.test`,
+    sending_domain: 'promote.test',
+    dkim_selector: 'zoho',
+    smtp_host: 'smtppro.zoho.in',
+    smtp_port: 465,
+    smtp_user: `new-default-${suffix}@promote.test`,
+    smtp_password_cipher: seal('pw'),
+    imap_enabled: false,
+    is_active: true,
+    is_default: true,
+  });
+
+  assert.equal(created.is_default, true, 'the new mailbox should be the default');
+  assert.equal(getMailbox(before.id).is_default, false, 'the previous default should have been demoted');
+  assert.equal(defaultMailbox().id, created.id);
+});
+
+test('promoting an existing mailbox to default also demotes the incumbent', async () => {
+  const incumbent = defaultMailbox();
+  const other = activeMailboxes().find((m) => m.id !== incumbent.id);
+  assert.ok(other, 'needs a second mailbox');
+
+  const updated = await updateMailbox(other.id, { is_default: true });
+
+  assert.equal(updated.is_default, true);
+  assert.equal(getMailbox(incumbent.id).is_default, false);
 });
