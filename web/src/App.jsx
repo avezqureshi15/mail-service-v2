@@ -108,13 +108,42 @@ export default function App() {
   );
 }
 
-const NAV_ITEMS = [
-  { to: '/', end: true, label: 'Dashboard', icon: DashboardIcon },
-  { to: '/contacts', label: 'Contacts', icon: ContactsIcon },
-  { to: '/predictor', label: 'Email Predictor', icon: PredictorIcon },
-  { to: '/campaigns', label: 'Campaigns', icon: CampaignsIcon },
-  { to: '/suppressions', label: 'Suppressions', icon: SuppressionsIcon },
-  { to: '/settings', label: 'Settings', icon: SettingsIcon },
+/**
+ * Grouped by responsibility rather than one flat list - "where does this
+ * belong" should be obvious from the group it sits in, not from memorising
+ * page names. Contacts and suppressions live under Outreach rather than a
+ * separate "Audience" group: they are the audience *for* outreach, not an
+ * independent concern of their own. Prospecting is its own group even though
+ * it only holds one page today: prospect analysis (scoring/enriching a list
+ * before it ever becomes a contact) belongs here too, next to the predictor.
+ */
+const NAV_GROUPS = [
+  {
+    label: 'Overview',
+    items: [
+      { to: '/', end: true, label: 'Dashboard', icon: DashboardIcon },
+    ],
+  },
+  {
+    label: 'Outreach',
+    items: [
+      { to: '/contacts', label: 'Contacts', icon: ContactsIcon },
+      { to: '/suppressions', label: 'Suppressions', icon: SuppressionsIcon },
+      { to: '/campaigns', label: 'Campaigns', icon: CampaignsIcon },
+    ],
+  },
+  {
+    label: 'Prospecting',
+    items: [
+      { to: '/predictor', label: 'Email Predictor', icon: PredictorIcon },
+    ],
+  },
+  {
+    label: 'Administration',
+    items: [
+      { to: '/settings', label: 'Settings', icon: SettingsIcon },
+    ],
+  },
 ];
 
 function Sidebar({
@@ -147,11 +176,16 @@ function Sidebar({
       </div>
 
       <nav onClick={onCloseMobile}>
-        {NAV_ITEMS.map(({ to, end, label, icon: Icon }) => (
-          <NavLink key={to} to={to} end={end} title={label}>
-            <Icon />
-            <span className="nav-label">{label}</span>
-          </NavLink>
+        {NAV_GROUPS.map((group) => (
+          <div className="nav-group" key={group.label}>
+            <div className="nav-group-label">{group.label}</div>
+            {group.items.map(({ to, end, label, icon: Icon }) => (
+              <NavLink key={to} to={to} end={end} title={label}>
+                <Icon />
+                <span className="nav-label">{label}</span>
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
 
