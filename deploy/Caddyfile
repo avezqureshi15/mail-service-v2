@@ -7,19 +7,26 @@
 
     handle {
         reverse_proxy 127.0.0.1:4000 {
-            # The app only issues Secure cookies when it believes the request
-            # arrived over HTTPS. TLS terminates here, so say so.
+            # TLS terminates here, so tell the app - it only issues Secure
+            # cookies when it believes the request arrived over HTTPS.
             header_up X-Forwarded-Proto https
 
-            # Caddy discards X-Forwarded-For from an untrusted peer, which is
-            # right - otherwise anyone could forge a client IP. But that also
-            # drops the real visitor's address that Netlify put there, leaving
-            # every unsubscribe recorded against a Netlify egress IP.
+            # Caddy is the edge now. Nothing sits in front of it, so the peer
+            # on the socket IS the visitor, and that is what the app should
+            # see as the client.
             #
-            # Netlify states the connecting client in its own header, so that
-            # is what we hand upstream. One address, so the app trusts exactly
-            # one hop.
-            header_up X-Forwarded-For {http.request.header.X-Nf-Client-Connection-Ip}
+            # Overwritten rather than appended on purpose: a client-supplied
+            # X-Forwarded-For would otherwise let anyone forge an address,
+            # bypassing the per-IP rate limits and poisoning the IP recorded
+            # against every unsubscribe.
+            #
+            # This previously read X-Nf-Client-Connection-Ip, because Netlify
+            # sat in front and that was where the real visitor appeared. With
+            # Netlify gone that header is never present, so the app was
+            # seeing an empty XFF and falling back to Caddy's own loopback
+            # address - putting every visitor on earth in one rate-limit
+            # bucket.
+            header_up X-Forwarded-For {http.request.remote.host}
         }
     }
 }
