@@ -76,7 +76,6 @@ function SingleCompany({ onSaved }) {
   const [seedEmail, setSeedEmail] = useState('');
   const [seedOwnerName, setSeedOwnerName] = useState('');
   const [names, setNames] = useState('');
-  const [checkAllNames, setCheckAllNames] = useState(false);
   const [outcome, setOutcome] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -114,7 +113,7 @@ function SingleCompany({ onSaved }) {
         names: nameList,
         seedEmail: seedEmail.trim(),
         seedOwnerName: seedOwnerName.trim(),
-        checkAllNames,
+        checkAllNames: true,
       });
       setOutcome(data);
       if (data.learnedNow) {
@@ -206,11 +205,7 @@ function SingleCompany({ onSaved }) {
           <div className="feature-card-icon" aria-hidden="true">&#10024;</div>
           <div className="feature-card-body">
             <label className="feature-card-toggle">
-              <input
-                type="checkbox"
-                checked={checkAllNames}
-                onChange={(e) => setCheckAllNames(e.target.checked)}
-              />
+              <input type="checkbox" checked disabled readOnly />
               <span className="feature-card-title">Check every name with the model</span>
             </label>
             <p className="feature-card-copy">
