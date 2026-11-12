@@ -80,6 +80,24 @@ export const unsubscribeLimiter = limiter(60 * 1000, 30, 'Too many requests.');
 export const trackingLimiter = limiter(60 * 1000, 240, 'Too many requests.');
 export const apiLimiter = limiter(60 * 1000, 300, 'Too many requests.');
 
+/**
+ * A backstop in front of everything, including the static frontend.
+ *
+ * The limiters above cover the API and the two public endpoints, but the
+ * built bundle had no ceiling at all - and at ~290KB it is by far the
+ * largest thing this server sends. That was Netlify's traffic to absorb
+ * until the frontend moved onto this box; now it is ours, and egress is the
+ * one cost dimension that is not already capped (CPU is, by the instance's
+ * standard credit mode).
+ *
+ * Deliberately generous: a page load is about four requests and active use
+ * perhaps fifty a minute, so a small team behind one office NAT must not
+ * trip it. It stops a single source pulling the bundle in a loop; it is not
+ * a defence against a distributed flood, which is what the billing alarm is
+ * for.
+ */
+export const globalLimiter = limiter(60 * 1000, 600, 'Too many requests.');
+
 export function notFound(_req, res) {
   res.status(404).json({ error: 'Not found' });
 }

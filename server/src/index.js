@@ -12,7 +12,7 @@ import { loadSettings } from './db/repositories/settings.js';
 import { loadMailboxes, allMailboxes } from './db/repositories/mailboxes.js';
 import { ensureDefaultMailbox } from './db/seed-mailbox.js';
 import {
-  loadUser, apiLimiter, notFound, errorHandler,
+  loadUser, apiLimiter, globalLimiter, notFound, errorHandler,
 } from './middleware/index.js';
 import { authRouter, usersRouter } from './routes/auth.js';
 import { contactsRouter, listsRouter, suppressionsRouter } from './routes/contacts.js';
@@ -61,6 +61,12 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 // RFC 8058 one-click unsubscribe posts application/x-www-form-urlencoded.
 app.use(express.urlencoded({ extended: false, limit: '100kb' }));
+
+// Mounted ahead of the session middleware on purpose: loadUser does a
+// database read for every request carrying a session cookie, so a flood of
+// forged cookies would otherwise reach Postgres before anything turned it
+// away. Rate limiting is cheapest when it happens first.
+app.use(globalLimiter);
 
 const PgStore = connectPgSimple(session);
 
