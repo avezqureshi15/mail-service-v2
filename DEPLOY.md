@@ -8,6 +8,44 @@ and `/t` through to Render. That is not decoration — see
 
 ---
 
+## Deploying: `./deploy.sh`
+
+```bash
+./deploy.sh "what this change does"
+```
+
+```bash
+./deploy.sh --dry-run
+```
+
+```bash
+./deploy.sh --verify
+```
+
+It works out for itself whether the backend needs redeploying. **If nothing
+under `server/` changed it skips the image entirely** - a frontend-only
+change takes ~20 seconds instead of ~4 minutes, and the running backend is
+never restarted. Netlify rebuilds from the push on its own; the image host
+does not, which is why that half has to be driven.
+
+The checks it runs before touching anything, each of which caught a real
+problem:
+
+| Check | What it prevents |
+|---|---|
+| `package.json` vs lockfile | `npm ci` failing four minutes into the Docker build |
+| New `required()` env var present locally *and on EC2* | the container refusing to boot - production down |
+| Destructive statements in new migrations | shipping a `DROP` against the live database unnoticed |
+| Secret scan over staged content | a credential reaching the public repo past `.gitignore` |
+| Tests, but only when `server/` changed | wasting two minutes on a CSS change |
+| Endpoint verification after deploy | believing a deploy that silently half-worked |
+
+It aborts on any of them rather than continuing. Exit codes on `docker build`
+and `docker push` are checked explicitly, because piping them into `tail`
+once reported success for a build that had failed.
+
+---
+
 ## Order of operations
 
 There is a circular dependency: Netlify needs the Render URL, and Render needs

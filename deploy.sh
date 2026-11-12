@@ -32,16 +32,26 @@ bold=$'\033[1m'; red=$'\033[31m'; green=$'\033[32m'; yellow=$'\033[33m'; dim=$'\
 step() { printf '\n%s== %s ==%s\n' "$bold" "$1" "$off"; }
 ok()   { printf '   %s%s%s\n' "$green" "$1" "$off"; }
 warn() { printf '   %s%s%s\n' "$yellow" "$1" "$off"; }
-die()  { printf '\n%sABORTED: %s%s\n\n' "$red" "$1" "$off" >&2; exit 1; }
+die()  { git reset -q >/dev/null 2>&1 || true; printf '
+%sABORTED: %s%s
+
+' "$red" "$1" "$off" >&2; exit 1; }
 info() { printf '   %s\n' "$1"; }
 
 DRY_RUN=0; VERIFY_ONLY=0; MSG=""
 case "${1:-}" in
-  --dry-run) DRY_RUN=1 ;;
-  --verify)  VERIFY_ONLY=1 ;;
+  --dry-run) DRY_RUN=1; shift ;;
+  --verify)  VERIFY_ONLY=1; shift ;;
   "")        ;;
-  *)         MSG="$1" ;;
+  *)         MSG="$1"; shift ;;
 esac
+
+# Optional paths to deploy. Default is everything - but another agent or an
+# open editor may be mid-change in this same working tree, and committing
+# their half-finished file alongside yours is how unfinished work reaches
+# production. Naming paths scopes the whole run to them, tests included.
+PATHS=( "$@" )
+[ ${#PATHS[@]} -eq 0 ] && PATHS=( "." )
 
 ssh_ec2() { ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "$EC2_USER@$EC2_HOST" "$@"; }
 
@@ -71,7 +81,7 @@ git fetch -q origin || die "cannot reach origin"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 [ "$BRANCH" = "main" ] || warn "on branch '$BRANCH', not main"
 
-DIRTY=$(git status --porcelain)
+DIRTY=$(git status --porcelain -- "${PATHS[@]}")
 AHEAD=$(git log --oneline origin/main..HEAD 2>/dev/null | wc -l | tr -d ' ')
 
 if [ -z "$DIRTY" ] && [ "$AHEAD" = "0" ]; then
@@ -86,7 +96,7 @@ fi
 # test-only change still rebuilds - harmless, and simpler than replicating
 # those rules here.
 SERVER_CHANGED=0
-if [ -n "$(git status --porcelain server/)" ] || \
+if [ -n "$(git status --porcelain -- "${PATHS[@]}" | grep -E '^.. server/' || true)" ] || \
    { [ "$AHEAD" != "0" ] && [ -n "$(git diff --name-only origin/main..HEAD -- server/)" ]; }; then
   SERVER_CHANGED=1
 fi
@@ -159,10 +169,19 @@ else
   info "${dim}server unchanged - skipping server tests${off}"
 fi
 
-info "building frontend ..."
-BUILD_OUT=$(cd web && npm run build 2>&1) || { echo "$BUILD_OUT" | tail -20; die "frontend build failed"; }
-ASSET=$(ls -t web/dist/assets/index-*.js 2>/dev/null | head -1 | xargs -r basename)
-ok "built  $ASSET"
+WEB_CHANGED=0
+if [ -n "$(git status --porcelain -- "${PATHS[@]}" | grep -E '^.. web/' || true)" ] \
+   || [ "${PATHS[0]}" = "." ]; then WEB_CHANGED=1; fi
+
+ASSET=""
+if [ "$WEB_CHANGED" = 1 ]; then
+  info "building frontend ..."
+  BUILD_OUT=$(cd web && npm run build 2>&1) || { echo "$BUILD_OUT" | tail -20; die "frontend build failed"; }
+  ASSET=$(ls -t web/dist/assets/index-*.js 2>/dev/null | head -1 | xargs -r basename)
+  ok "built  $ASSET"
+else
+  info "${dim}web/ unchanged - skipping frontend build${off}"
+fi
 
 # ---------------------------------------------------------------------------
 step "Secret scan"
@@ -170,14 +189,25 @@ step "Secret scan"
 # The GitHub repo is public. .gitignore is necessary but not sufficient - a
 # credential pasted into source would sail past it.
 if [ -f server/.env ]; then
-  git add -A
+  git add -- "${PATHS[@]}"
+  printf '   %sstaging:%s\n' "$dim" "$off"
+  git diff --cached --name-status | sed 's/^/     /'
   LEAKS=$(node --input-type=module -e '
     import { execSync } from "node:child_process"; import fs from "node:fs";
     const env = fs.readFileSync("server/.env","utf8");
     const get = k => (env.match(new RegExp("^"+k+"=(.*)$","m")) ?? [])[1]?.trim() ?? "";
     const names = [...env.matchAll(/^([A-Z][A-Z0-9_]+)=/gm)].map(m => m[1]);
     const secrets = {};
-    for (const k of names) { const v = get(k); if (v && v.length >= 12 && !/^https?:\/\/[^:]*$/.test(v)) secrets[k] = v; }
+    // Only keys that actually name a credential. Matching on value length
+    // instead flagged SMTP_HOST (smtp.gmail.com) wherever the docs mention it
+    // and blocked the deploy - a check that cries wolf gets switched off,
+    // which is worse than not having one.
+    const SENSITIVE = /(PASSWORD|SECRET|_KEY|TOKEN|CIPHER|CREDENTIAL)/;
+    for (const k of names) {
+      if (!SENSITIVE.test(k) && k !== "DATABASE_URL") continue;
+      const v = get(k);
+      if (v && v.length >= 8) secrets[k] = v;
+    }
     const dbpw = (get("DATABASE_URL").match(/:\/\/[^:]+:([^@]+)@/) ?? [])[1];
     if (dbpw) secrets["DATABASE_PASSWORD"] = dbpw;
     const staged = execSync("git diff --cached --name-only",{encoding:"utf8"}).trim().split("\n").filter(Boolean);
@@ -260,6 +290,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+if [ -n "$ASSET" ]; then
 step "Waiting for Netlify"
 for i in $(seq 1 40); do
   LIVE=$(curl -s -m 20 "$SITE/" 2>/dev/null | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1 || true)
@@ -267,6 +298,10 @@ for i in $(seq 1 40); do
   sleep 8
 done
 [ "$LIVE" = "/assets/$ASSET" ] || warn "still serving $LIVE - Netlify may still be building"
+else
+  step "Netlify"
+  info "${dim}no frontend change in scope - not waiting on a build${off}"
+fi
 
 verify_live
 
