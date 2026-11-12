@@ -69,6 +69,13 @@ Passwords are encrypted at rest with AES-256-GCM under `SECRETS_KEY`, and the
 API never returns one. **Back that key up with the database**: lose it and every
 stored mailbox password has to be re-entered.
 
+Each mailbox records its own **DKIM selector** — the name your provider's DKIM
+key is published under. If a mailbox's check finds no key under the selector
+it's set to, it looks for one under the usual alternatives before reporting
+anything broken: if the key is simply published under a different name, the
+check names that selector directly, so fixing it is a one-field change on the
+mailbox rather than a trip back to DNS.
+
 The `SMTP_*` and `IMAP_*` variables in `.env` are only a seed for the first
 mailbox on an existing install. After that they are ignored.
 
@@ -220,24 +227,44 @@ node server/scripts/smtp-test.js --to you@yourdomain.com
 
 1. **Sign in** — each rep has their own account. Contacts and lists are shared;
    campaigns are attributed to whoever sent them.
-2. **Import a CSV** — returns a validation report rather than silently accepting
-   everything: valid rows accepted, shared mailboxes (`info@`, `sales@`) flagged,
-   and malformed / dead-domain / disposable / duplicate / already-unsubscribed rows
-   rejected with a reason. List quality is visible *before* anything is mailed.
-3. **Compose** with merge fields — `{{first_name}}`, `{{company}}`, `{{email}}`,
+2. **Organize contacts into lists** — a landing page shows every list (its own
+   card, its contact count) plus an **All contacts** view that aggregates
+   everyone regardless of which list they're on. Open any list to search its
+   members, filter by active / unsubscribed / bounced, export it to CSV, or
+   delete the list — deleting a list never deletes the contacts in it, it just
+   un-groups them.
+3. **Import a CSV** — the first question is always *which list does this go
+   into*: an existing one, or a brand-new one named on the spot. Only then is a
+   file picked. Importing returns a validation report rather than silently
+   accepting everything: valid rows accepted, shared mailboxes (`info@`,
+   `sales@`) flagged, and malformed / dead-domain / disposable / duplicate /
+   already-unsubscribed rows rejected with a reason — list quality is visible
+   *before* anything is mailed. Not sure of the column layout? A one-click
+   sample CSV shows the expected format.
+4. **Find the email address you don't have** — the Email Predictor turns one
+   known address at a company (or nothing at all, for a company it has already
+   seen) into working addresses for a whole list of names, by learning the
+   pattern that company actually uses rather than guessing a generic one.
+   Names where the surname isn't just "the last word" — common in South Indian,
+   Chinese and Korean naming — are checked individually instead of assumed, so
+   they don't come out backwards. Run it one company at a time, or upload a
+   spreadsheet of many companies at once; confidence is shown per address, and
+   the pattern it learned gets more certain (or gets corrected) as real sends
+   land or bounce.
+5. **Compose** with merge fields — `{{first_name}}`, `{{company}}`, `{{email}}`,
    plus any extra CSV column.
-4. **Live content score** — flags shorteners, shouted subjects, trigger phrasing
+6. **Live content score** — flags shorteners, shouted subjects, trigger phrasing
    and poor text-to-image ratio while they type. Hard-blocks a missing unsubscribe
    link or postal address.
-5. **Preview and test** — desktop, mobile and plaintext views, plus a real test
+7. **Preview and test** — desktop, mobile and plaintext views, plus a real test
    send to themselves.
-6. **Tracking toggle** — per campaign, **off by default**.
-7. **Sequences** — optional follow-up steps with a wait in days. Anyone who
+8. **Tracking toggle** — per campaign, **off by default**.
+9. **Sequences** — optional follow-up steps with a wait in days. Anyone who
    replies, unsubscribes or bounces is removed automatically. Follow-ups thread
    onto the original message.
-8. **Send or schedule** — pacing is automatic; reps configure nothing.
-9. **Watch it run** — live progress, per-recipient status, bounces.
-10. **Dashboard** — domain health, quota, warm-up stage, bounce and complaint rates.
+10. **Send or schedule** — pacing is automatic; reps configure nothing.
+11. **Watch it run** — live progress, per-recipient status, bounces.
+12. **Dashboard** — domain health, quota, warm-up stage, bounce and complaint rates.
 
 Replies land in the normal Zoho inbox and are answered there. The app detects
 *that* a reply arrived (to stop the sequence); it is not an inbox.
