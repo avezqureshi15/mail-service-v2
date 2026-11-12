@@ -7,7 +7,7 @@ import { useToast } from '../lib/toast.jsx';
  * report, commit writes it. The destination is chosen up front so the rep
  * never uploads a file before deciding where it goes.
  */
-export default function ImportPanel({ lists, currentListId, onClose, onDone }) {
+export default function ImportPanel({ lists, currentListId, onClose, onDone, embedded = false }) {
   const toast = useToast();
   const [preview, setPreview] = useState(null);
   const [destMode, setDestMode] = useState(
@@ -72,11 +72,13 @@ export default function ImportPanel({ lists, currentListId, onClose, onDone }) {
   const labels = preview?.reasonLabels ?? {};
 
   return (
-    <div className="card">
-      <div className="step-head">
-        <strong>Import contacts from CSV</strong>
-        <button type="button" className="secondary small" onClick={onClose}>Close</button>
-      </div>
+    <div className={embedded ? 'import-panel-content' : 'card'}>
+      {!embedded && (
+        <div className="step-head">
+          <strong>Import contacts from CSV</strong>
+          <button type="button" className="secondary small" onClick={onClose}>Close</button>
+        </div>
+      )}
 
       {error && <div className="alert error">{error}</div>}
 
@@ -134,9 +136,9 @@ export default function ImportPanel({ lists, currentListId, onClose, onDone }) {
             <label htmlFor="csv">CSV file</label>
             <input id="csv" type="file" accept=".csv,text/csv" ref={fileRef} onChange={runPreview} />
             <div className="hint">
-              Needs an email column. Name, company and any extra columns are picked up
-              automatically and become merge fields.
+              Include an email column; other columns are imported as contact details or merge fields.
             </div>
+            <div className="hint"><a href="/contacts-sample.csv" download>Download sample CSV</a></div>
           </div>
           {busy && <p className="muted">Validating addresses and checking domains...</p>}
         </>

@@ -12,7 +12,7 @@
     "check:dns": "node scripts/check-dns.js",
     "check:smtp": "node scripts/smtp-test.js",
     "warmup:plan": "node scripts/warmup-plan.js",
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test --test-concurrency=2 \"test/*.test.js\"",
     "dns:plan": "node scripts/dns-plan.js",
     "setup": "node scripts/setup.js",
     "preflight": "node scripts/preflight.js",

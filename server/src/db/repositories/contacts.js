@@ -150,7 +150,7 @@ export async function countByStatus(tenantId = 1) {
     [tenantId],
   );
   const counts = { active: 0, unsubscribed: 0, bounced: 0, complained: 0 };
-  for (const row of rows) counts[row.status] = row.n;
+  for (const row of rows) counts[row.status] = Number(row.n);
   counts.total = Object.values(counts).reduce((a, b) => a + b, 0);
   return counts;
 }
@@ -181,7 +181,17 @@ export function findListByName(name, tenantId = 1) {
 
 export function listLists(tenantId = 1) {
   return query(
-    `SELECT l.*, (SELECT COUNT(*) FROM list_contacts lc WHERE lc.list_id = l.id) AS contact_count
+    `SELECT l.*,
+            (SELECT COUNT(*) FROM list_contacts lc WHERE lc.list_id = l.id) AS contact_count,
+            (SELECT COUNT(*) FROM list_contacts lc
+              JOIN contacts c ON c.id = lc.contact_id
+             WHERE lc.list_id = l.id AND c.tenant_id = l.tenant_id AND c.status = 'active') AS active_count,
+            (SELECT COUNT(*) FROM list_contacts lc
+              JOIN contacts c ON c.id = lc.contact_id
+             WHERE lc.list_id = l.id AND c.tenant_id = l.tenant_id AND c.status = 'unsubscribed') AS unsubscribed_count,
+            (SELECT COUNT(*) FROM list_contacts lc
+              JOIN contacts c ON c.id = lc.contact_id
+             WHERE lc.list_id = l.id AND c.tenant_id = l.tenant_id AND c.status = 'bounced') AS bounced_count
        FROM lists l
       WHERE l.tenant_id = $1
       ORDER BY l.created_at DESC`,

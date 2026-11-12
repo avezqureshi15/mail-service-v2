@@ -95,6 +95,10 @@ async function refreshDomainAuth(settings) {
     pairs.set(`${mailbox.sending_domain}:${mailbox.dkim_selector}`, mailbox);
   }
 
+  for (const key of domainAuth.keys()) {
+    if (!pairs.has(key)) domainAuth.delete(key);
+  }
+
   for (const [key, mailbox] of pairs) {
     const cached = domainAuth.get(key);
     if (cached && Date.now() - cached.checkedAt < DOMAIN_AUTH_TTL_MS) continue;

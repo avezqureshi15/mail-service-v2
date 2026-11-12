@@ -36,9 +36,9 @@ if (existsSync(envFile)) {
 const schema = `test_${process.pid}_${Date.now().toString(36)}`;
 
 process.env.DATABASE_SCHEMA = schema;
-// One connection is plenty for a test run, and it keeps the shared pooler
-// from filling up with idle connections from repeated runs.
-process.env.DATABASE_POOL_MAX = '2';
+// Tests in a file run sequentially; one connection is enough. Combined with
+// the runner's concurrency cap this avoids exhausting the shared Supabase pool.
+process.env.DATABASE_POOL_MAX = '1';
 
 if (!process.env.DATABASE_URL) {
   throw new Error(

@@ -114,12 +114,55 @@ export async function checkSpf(domain, { provider = null, dataCentre = null } = 
 /**
  * DKIM: the selector published by Zoho must resolve and carry a public key.
  */
+/**
+ * Selectors worth looking under when the configured one finds nothing.
+ *
+ * The selector is chosen by whoever set DKIM up - Zoho's own documentation
+ * calls it "any string of your convenience" - so a missing record far more
+ * often means the wrong name than a missing key. Checking the usual ones
+ * turns a dead end into a one-field correction.
+ */
+const COMMON_SELECTORS = [
+  'zoho', 'zmail', 'google', 'default', 'dkim', 'mail', 'email',
+  's1', 's2', 'selector1', 'selector2', 'k1', 'key1',
+];
+
+/** Looks for a key published under some other selector on the same domain. */
+async function findPublishedSelector(domain, configured) {
+  const candidates = COMMON_SELECTORS.filter((s) => s !== configured);
+
+  const results = await Promise.all(candidates.map(async (candidate) => {
+    try {
+      const found = await txtRecords(`${candidate}._domainkey.${domain}`);
+      return found.some((r) => /p=[A-Za-z0-9+/=]+/.test(r)) ? candidate : null;
+    } catch {
+      return null;
+    }
+  }));
+
+  return results.find(Boolean) ?? null;
+}
+
 export async function checkDkim(domain, selector) {
   const name = `${selector}._domainkey.${domain}`;
   const records = await txtRecords(name);
 
   if (records.length === 0) {
-    return check(false, `No DKIM record at ${name}`, 'Enable DKIM in the Zoho Mail admin console (Email Authentication > DKIM), then publish the TXT record it generates. Confirm the selector matches DKIM_SELECTOR in .env.');
+    // Before telling anyone to go and generate a key, check whether one is
+    // already published under a different name.
+    const elsewhere = await findPublishedSelector(domain, selector);
+
+    if (elsewhere) {
+      return check(
+        false,
+        `No DKIM record at ${name} - but a key is published under "${elsewhere}"`,
+        `DKIM is set up on ${domain}; this mailbox is just looking under the wrong `
+        + `selector. Change its DKIM selector from "${selector}" to "${elsewhere}" and `
+        + 're-run the check. No DNS change is needed.',
+      );
+    }
+
+    return check(false, `No DKIM record at ${name}`, `Enable DKIM in the Zoho Mail admin console (Email Authentication > DKIM), then publish the TXT record it generates at ${name}. The selector there must match the one set on this mailbox.`);
   }
 
   const record = records.find((r) => /p=/.test(r)) ?? records[0];

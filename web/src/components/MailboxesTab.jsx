@@ -397,6 +397,21 @@ function MailboxForm({ value, providers, onCancel, onSaved }) {
         </div>
       )}
 
+      <div className="field">
+        <label htmlFor="mb-dkim-selector">DKIM selector</label>
+        <input
+          id="mb-dkim-selector"
+          value={form.dkimSelector}
+          onChange={(e) => set({ dkimSelector: e.target.value })}
+          placeholder={preset?.dkimSelector || 'default'}
+        />
+        <div className="hint">
+          Enter the selector shown in your provider&apos;s DKIM settings. For example, if the
+          DNS record is <span className="mono">zmail._domainkey.yourdomain.com</span>, enter{' '}
+          <span className="mono">zmail</span>. No DNS change is needed when the key already exists.
+        </div>
+      </div>
+
       <div className="row">
         <div className="field">
           <label htmlFor="mb-from-name">Sender name</label>

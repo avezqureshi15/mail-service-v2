@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkSpf, checkDmarc } from '../src/lib/dns-check.js';
+import { checkSpf, checkDmarc, checkDkim } from '../src/lib/dns-check.js';
 import { GREETING } from '../src/lib/smtp-probe.js';
 import { zohoRegionMismatch } from '../src/lib/spf.js';
 import { PROVIDERS, resolveProvider } from '../src/config/providers.js';
@@ -104,4 +104,28 @@ test('greeting patterns match the right protocol', () => {
   assert.ok(!GREETING.imap.test('220 SMTP Server ready'));
   // 554 is a server refusing the connection, not a greeting.
   assert.ok(!GREETING.smtp.test('554 no SMTP service here'));
+});
+
+
+/**
+ * A missing DKIM record far more often means the wrong selector than a
+ * missing key - Zoho calls the selector "any string of your convenience", so
+ * there is no default to rely on. Sending someone to generate a key they
+ * already have is the worst possible advice, because it is plausible.
+ */
+test('a key published under another selector is found and named', async () => {
+  // webknot.in publishes under `google`; ask for the wrong one on purpose.
+  const result = await checkDkim('webknot.in', 'zoho');
+
+  assert.equal(result.ok, false, 'the configured selector genuinely has no record');
+  assert.match(result.summary, /published under "google"/);
+  assert.match(result.detail, /No DNS change is needed/);
+});
+
+test('a domain with no DKIM anywhere is not told it has one', async () => {
+  const result = await checkDkim('example.invalid', 'zoho');
+
+  assert.equal(result.ok, false);
+  assert.doesNotMatch(result.summary, /published under/);
+  assert.match(result.detail, /Enable DKIM/);
 });
